@@ -15,6 +15,7 @@ import Office from "@/pages/Office";
 import Operator from "@/pages/Operator";
 import Reminders from "@/pages/Reminders";
 import Team from "@/pages/Team";
+import Organisation from "@/pages/Organisation";
 import AcceptInvite from "@/pages/AcceptInvite";
 import ResetPassword from "@/pages/ResetPassword";
 import DriverApp from "@/pages/driver/DriverApp";
@@ -46,6 +47,7 @@ function AppRouter() {
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
       <Route path="/team" element={<Protected><Team /></Protected>} />
+      <Route path="/organisation" element={<Protected><Organisation /></Protected>} />
       <Route path="/operator" element={<Protected><Operator /></Protected>} />
       <Route path="/calendar" element={<Protected><Calendar /></Protected>} />
       <Route path="/maintenance" element={<Protected><Maintenance /></Protected>} />

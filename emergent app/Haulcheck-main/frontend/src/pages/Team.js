@@ -95,8 +95,12 @@ export default function Team() {
     <div data-testid="team-page">
       <div className="mb-8">
         <p className="text-xs uppercase tracking-[0.2em] text-slate-500 font-semibold">Account</p>
-        <h1 className="font-heading text-3xl sm:text-4xl font-black tracking-tight text-slate-900 mt-1">Team &amp; Users</h1>
-        <p className="text-slate-500 text-sm mt-1">Invite other operators to set up their own isolated compliance account, pre-seeded with your links &amp; reminder template.</p>
+        <h1 className="font-heading text-3xl sm:text-4xl font-black tracking-tight text-slate-900 mt-1">Refer an Operator</h1>
+        <p className="text-slate-500 text-sm mt-1">Invite <strong>another haulage operator</strong> to set up their own separate compliance account, pre-seeded with your links &amp; reminder template. They will not see any of your records.</p>
+        <p className="text-slate-500 text-sm mt-2 bg-slate-50 border border-slate-200 rounded-md px-3 py-2">
+          Looking to add a colleague to <strong>your own</strong> fleet — sharing the same vehicles, drivers and records?
+          Use the <a href="/organisation" className="underline font-semibold" data-testid="team-to-organisation-link">Organisation</a> page instead.
+        </p>
       </div>
 
       {/* At-a-glance summary */}

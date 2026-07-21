@@ -17,6 +17,7 @@ const NAV = [
   { to: "/tacho", label: "Tacho Portal", icon: Gauge, id: "tacho" },
   { to: "/office", label: "Office", icon: Briefcase, id: "office" },
   { to: "/reminders", label: "Reminders", icon: Bell, id: "reminders" },
+  { to: "/organisation", label: "Organisation", icon: Building2, id: "organisation" },
   { to: "/team", label: "Team", icon: UserPlus, id: "team" },
 ];
 

@@ -50,9 +50,22 @@ export const AuthProvider = ({ children }) => {
     window.location.href = "/login";
   }, []);
 
+  // Organisation role, derived once here so no component has to know the
+  // ranking. `canWrite` is the flag almost every screen actually wants: viewers
+  // are read-only, and the backend enforces the same rule in get_current_user,
+  // so this only decides whether a control is shown -- never whether it is safe.
+  const orgRole = user?.org_role || null;
+  const isOwner = orgRole === "owner";
+  const canWrite = Boolean(user) && orgRole !== "viewer" && !user?.impersonated_by;
+  const isPlatformAdmin = user?.platform_role === "platform_admin";
+
   const value = useMemo(
-    () => ({ user, setUser, loading, loginWithToken, logout, checkAuth, updateRegion }),
-    [user, loading, loginWithToken, logout, checkAuth, updateRegion]
+    () => ({
+      user, setUser, loading, loginWithToken, logout, checkAuth, updateRegion,
+      orgRole, isOwner, canWrite, isPlatformAdmin,
+    }),
+    [user, loading, loginWithToken, logout, checkAuth, updateRegion,
+     orgRole, isOwner, canWrite, isPlatformAdmin]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

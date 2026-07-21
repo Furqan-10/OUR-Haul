@@ -22,6 +22,8 @@ from datetime import datetime, timezone, timedelta
 from pdf_export import build_report_pdf, merge_pack, build_letter_pdf, build_pmi_sheet_pdf, concat_pdfs, build_weekly_walkaround_pdf
 from tacho_engine import parse_ddd, parse_ddd_last_timestamp, detect_ddd_infringements, _DDD_EXTS
 import reports
+import tenancy
+from tenancy import tenant_filter, stamp, require_role, ROLE_VIEWER, ROLE_MANAGER, ROLE_OWNER
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -117,6 +119,28 @@ class LoginInput(BaseModel):
 class InviteInput(BaseModel):
     email: EmailStr
     base_url: str = ""
+    # "org"      -> the invitee joins the inviter's organisation and shares its
+    #               fleet, drivers and records, with the role below.
+    # "referral" -> the invitee sets up a *separate* organisation of their own,
+    #               pre-seeded with the inviter's links and reminder template.
+    #               This is the original behaviour and stays the default, so
+    #               existing clients and pending invitations are unaffected.
+    kind: str = "referral"
+    role: str = tenancy.ROLE_MANAGER
+
+    @field_validator("kind")
+    @classmethod
+    def _valid_kind(cls, v):
+        if v not in ("org", "referral"):
+            raise ValueError("kind must be 'org' or 'referral'")
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v):
+        if v not in tenancy.ROLE_RANK:
+            raise ValueError(f"Role must be one of {', '.join(tenancy.ROLE_RANK)}")
+        return v
 
 
 class ForgotPasswordInput(BaseModel):
@@ -140,8 +164,78 @@ class User(BaseModel):
     email: str
     name: str
     role: str = "manager"
+    # Region is a property of the operating company (UK/DVSA vs IE/RSA), so it
+    # now lives on the organisation. It is still surfaced here, populated from
+    # the org by _authenticate(), because ~20 call sites read `user.region`
+    # directly and there is no reason to churn them.
     region: str = "UK"
     picture: Optional[str] = None
+    # --- Tenancy ---
+    # org_id is what isolates one customer from another. user_id identifies the
+    # person; it no longer decides what they can see.
+    org_id: str = ""
+    org_role: str = tenancy.ROLE_OWNER
+    platform_role: str = tenancy.PLATFORM_ROLE_USER
+    # Set only while a platform admin is impersonating; carries the admin's
+    # user_id so every action can be attributed to them in the audit log.
+    impersonated_by: Optional[str] = None
+
+
+class Organisation(BaseModel):
+    org_id: str = Field(default_factory=lambda: f"org_{uuid.uuid4().hex[:12]}")
+    name: str = ""
+    owner_user_id: str = ""
+    region: str = "UK"
+    # Reserved for the later billing phase so subscriptions need no second
+    # migration. Nothing reads or enforces these yet.
+    plan: str = "free"
+    plan_limits: dict = Field(default_factory=dict)
+    subscription_status: str = "none"
+    active: bool = True
+    created_at: str = Field(default_factory=now_iso)
+
+
+class OrgMember(BaseModel):
+    org_id: str
+    user_id: str
+    role: str = tenancy.ROLE_MANAGER
+    joined_at: str = Field(default_factory=now_iso)
+
+
+class OrgUpdateInput(BaseModel):
+    name: Optional[str] = None
+    region: Optional[str] = None
+
+    @field_validator("region")
+    @classmethod
+    def _valid_region(cls, v):
+        if v is not None and v not in ("UK", "IE"):
+            raise ValueError("Region must be UK or IE")
+        return v
+
+
+class OrgInviteInput(BaseModel):
+    email: EmailStr
+    role: str = tenancy.ROLE_MANAGER
+    base_url: str = ""
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v):
+        if v not in tenancy.ROLE_RANK:
+            raise ValueError(f"Role must be one of {', '.join(tenancy.ROLE_RANK)}")
+        return v
+
+
+class OrgMemberRoleInput(BaseModel):
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v):
+        if v not in tenancy.ROLE_RANK:
+            raise ValueError(f"Role must be one of {', '.join(tenancy.ROLE_RANK)}")
+        return v
 
 
 class Attachment(BaseModel):
@@ -153,6 +247,7 @@ class Attachment(BaseModel):
 class Alert(BaseModel):
     id: str = Field(default_factory=lambda: f"alrt_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     type: str = "defect"  # walkaround_defect | defect_report | pmi_fail
     severity: str = "major"  # minor | major | safety_critical
     title: str = ""
@@ -168,6 +263,7 @@ class Alert(BaseModel):
 class Vehicle(BaseModel):
     id: str = Field(default_factory=lambda: f"veh_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     registration: str
     make: str = ""
     model: str = ""
@@ -203,6 +299,7 @@ class VehicleInput(BaseModel):
 class Trailer(BaseModel):
     id: str = Field(default_factory=lambda: f"trl_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     trailer_number: str
     type: str = "Curtainsider"
     mot_due: Optional[str] = None
@@ -226,6 +323,7 @@ class TrailerInput(BaseModel):
 class Driver(BaseModel):
     id: str = Field(default_factory=lambda: f"drv_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     name: str
     licence_number: str = ""
     licence_expiry: Optional[str] = None
@@ -262,6 +360,7 @@ class DriverInput(BaseModel):
 class DefectReport(BaseModel):
     id: str = Field(default_factory=lambda: f"def_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str
     reported_by: str = ""
     category: str = "General"
@@ -298,6 +397,7 @@ class DefectInput(BaseModel):
 class ComplianceDoc(BaseModel):
     id: str = Field(default_factory=lambda: f"doc_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     title: str
     doc_type: str = "Operator Licence"
     reference: str = ""
@@ -343,6 +443,7 @@ class LetterGenerateInput(BaseModel):
 class TradeUnion(BaseModel):
     id: str = Field(default_factory=lambda: f"tu_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     union_name: str
     branch: str = ""
     rep_name: str = ""
@@ -372,6 +473,7 @@ class TradeUnionInput(BaseModel):
 class WebLink(BaseModel):
     id: str = Field(default_factory=lambda: f"link_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     title: str
     url: str
     category: str = "General"
@@ -389,6 +491,7 @@ class WebLinkInput(BaseModel):
 class FuelRecord(BaseModel):
     id: str = Field(default_factory=lambda: f"fuel_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str
     fill_type: str = "diesel"  # diesel | adblue
     fill_date: Optional[str] = None
@@ -412,6 +515,7 @@ class FuelInput(BaseModel):
 class InsurancePolicy(BaseModel):
     id: str = Field(default_factory=lambda: f"ins_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     policy_type: str = "Motor — Truck"
     insurer: str = ""
     policy_number: str = ""
@@ -440,6 +544,7 @@ class InsuranceInput(BaseModel):
 class TachoRecord(BaseModel):
     id: str = Field(default_factory=lambda: f"tac_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     source_type: str = "Driver Card"  # Driver Card | Vehicle Unit
     reference: str = ""  # driver name or vehicle reg
     frequency_days: int = 28
@@ -473,6 +578,7 @@ class TachoAnalyseInput(BaseModel):
 class TachoAnalysis(BaseModel):
     id: str = Field(default_factory=lambda: f"tan_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     driver_name: str = ""
     period: str = ""
     summary: str = ""
@@ -502,6 +608,7 @@ class OperatorInput(BaseModel):
 class PMISchedule(BaseModel):
     id: str = Field(default_factory=lambda: f"pmi_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str
     frequency_weeks: int = 6
     next_due: Optional[str] = None
@@ -556,6 +663,7 @@ class PMIInterimInput(PMICompleteInput):
 class TrainingRecord(BaseModel):
     id: str = Field(default_factory=lambda: f"trn_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     driver_id: str = ""
     driver_name: str = ""
     course_name: str
@@ -585,6 +693,7 @@ class TrainingInput(BaseModel):
 class WheelAudit(BaseModel):
     id: str = Field(default_factory=lambda: f"wsa_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str
     audit_date: Optional[str] = None
     result: str = "pass"  # pass | advisory | fail
@@ -610,6 +719,7 @@ class WheelAuditInput(BaseModel):
 class ServiceRecord(BaseModel):
     id: str = Field(default_factory=lambda: f"svc_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str
     service_date: Optional[str] = None
     service_type: str = "Full service"
@@ -637,6 +747,7 @@ class ServiceInput(BaseModel):
 class WalkaroundCheck(BaseModel):
     id: str = Field(default_factory=lambda: f"wac_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str
     driver_name: str = ""
     check_date: Optional[str] = None
@@ -679,6 +790,7 @@ def week_start_of(d: Optional[str] = None) -> str:
 class WeeklyWalkaround(BaseModel):
     id: str = Field(default_factory=lambda: f"wwc_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str = ""
     driver_name: str = ""
     week_start: str = ""
@@ -718,6 +830,7 @@ class WeeklyDayInput(BaseModel):
 class TestHistory(BaseModel):
     id: str = Field(default_factory=lambda: f"thr_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
+    org_id: str = ""
     vehicle_reg: str
     event_type: str = "annual_test"  # annual_test | prohibition
     event_date: Optional[str] = None
@@ -775,17 +888,36 @@ async def get_current_driver(request: Request) -> dict:
     driver = await db.drivers.find_one({"id": payload.get("driver_id")}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=401, detail="Driver not found")
+    # Drivers write into their operator's records, so they carry org context
+    # exactly like a manager does. A driver record predating the backfill has no
+    # org_id, so resolve it from the owning user rather than failing the login.
+    if not driver.get("org_id"):
+        owner = await db.users.find_one({"user_id": driver.get("user_id")}, {"_id": 0})
+        if not owner:
+            raise HTTPException(status_code=401, detail="Driver account is not linked to an operator")
+        org = await ensure_org_for_user(owner)
+        driver["org_id"] = org["org_id"]
+        await db.drivers.update_one({"id": driver["id"]}, {"$set": {"org_id": org["org_id"]}})
+    org = await db.organisations.find_one({"org_id": driver["org_id"]}, {"_id": 0})
+    if not org or not org.get("active", True):
+        raise HTTPException(status_code=403, detail="This account is not active")
+    driver["region"] = org.get("region", "UK")
     return driver
 
 
-async def create_alert(user_id, type_, severity, title, message, vehicle_reg="", driver_name="", link=""):
+async def create_alert(org_id, type_, severity, title, message, vehicle_reg="", driver_name="", link=""):
     """Create an in-app defect alert and email the operator for major/safety-critical ones."""
-    alert = Alert(user_id=user_id, type=type_, severity=severity, title=title, message=message,
+    alert = Alert(org_id=org_id, type=type_, severity=severity, title=title, message=message,
                   vehicle_reg=vehicle_reg, driver_name=driver_name, link=link)
     await db.alerts.insert_one(alert.model_dump())
     if severity in ("major", "safety_critical"):
         try:
-            owner = await db.users.find_one({"user_id": user_id}, {"_id": 0, "email": 1})
+            # Notify the organisation's owner. Previously this looked up the
+            # single account that owned the record; an org can now have several
+            # members, and the owner is the accountable one.
+            org = await db.organisations.find_one({"org_id": org_id}, {"_id": 0}) or {}
+            owner = await db.users.find_one(
+                {"user_id": org.get("owner_user_id")}, {"_id": 0, "email": 1})
             if owner and owner.get("email"):
                 import resend
                 resend.api_key = os.environ['RESEND_API_KEY']
@@ -804,6 +936,76 @@ async def create_alert(user_id, type_, severity, title, message, vehicle_reg="",
     return alert
 
 
+async def ensure_org_for_user(user_doc: dict) -> dict:
+    """Return the organisation this user belongs to, creating one if needed.
+
+    Self-healing on purpose. The backfill migration gives every existing user an
+    org, but a user can also arrive through a path that predates or bypasses it
+    (an old Google session, a restored backup, a code path added later). Rather
+    than let such a request run without an org -- which tenant_filter() would
+    reject -- provision a private org for them on the spot. That reproduces the
+    old one-user-one-tenant behaviour exactly, so the fallback is never a leak.
+    """
+    uid = user_doc["user_id"]
+    org_id = user_doc.get("org_id")
+    if org_id:
+        org = await db.organisations.find_one({"org_id": org_id}, {"_id": 0})
+        if org:
+            return org
+
+    existing = await db.organisations.find_one({"owner_user_id": uid}, {"_id": 0})
+    if existing:
+        await db.users.update_one({"user_id": uid}, {"$set": {"org_id": existing["org_id"]}})
+        return existing
+
+    # tenancy: allow-user-scope -- this runs *before* the org exists, so there is
+    # no org_id to filter on yet. Reads the legacy per-user operator profile only
+    # to give the new organisation a meaningful name.
+    operator = await db.operator.find_one({"user_id": uid}, {"_id": 0}) or {}
+    org = Organisation(
+        name=(operator.get("company_name") or "").strip() or (user_doc.get("name") or "Organisation"),
+        owner_user_id=uid,
+        region=user_doc.get("region", "UK"),
+        active=user_doc.get("active", True),
+    )
+    await db.organisations.insert_one(org.model_dump())
+    await db.org_members.update_one(
+        {"org_id": org.org_id, "user_id": uid},
+        {"$set": OrgMember(org_id=org.org_id, user_id=uid, role=ROLE_OWNER).model_dump()},
+        upsert=True,
+    )
+    await db.users.update_one({"user_id": uid}, {"$set": {"org_id": org.org_id}})
+    logging.info(f"Provisioned organisation {org.org_id} for user {uid}")
+    return org.model_dump()
+
+
+async def _build_user(user_doc: dict, impersonated_by: Optional[str] = None) -> Optional[User]:
+    """Attach organisation context to an authenticated user document.
+
+    Everything downstream scopes on `org_id`, so resolving it here is what makes
+    a request tenant-safe. An org that has been suspended blocks its members,
+    which is how the admin console takes a whole customer offline.
+    """
+    org = await ensure_org_for_user(user_doc)
+    if not org.get("active", True):
+        return None
+    membership = await db.org_members.find_one(
+        {"org_id": org["org_id"], "user_id": user_doc["user_id"]}, {"_id": 0})
+    resolved = {
+        "org_id": org["org_id"],
+        # Region comes from the org, overriding any stale copy on the user.
+        "region": org.get("region", "UK"),
+        "org_role": (membership or {}).get("role", ROLE_OWNER),
+        "platform_role": user_doc.get("platform_role", tenancy.PLATFORM_ROLE_USER),
+        "impersonated_by": impersonated_by,
+    }
+    # The stored document also carries org_id and region; the values resolved
+    # above win, so they are dropped here rather than passed twice.
+    base = {k: v for k, v in user_doc.items()
+            if k in User.model_fields and k not in resolved}
+    return User(**base, **resolved)
+
+
 async def _authenticate(cookie_token: Optional[str], bearer: Optional[str]) -> Optional[User]:
     # Prefer an explicit Bearer JWT: it is set by the current email/password/invite
     # login and must take precedence over any stale Google session cookie left in
@@ -814,7 +1016,7 @@ async def _authenticate(cookie_token: Optional[str], bearer: Optional[str]) -> O
             if payload.get("role") != "driver":
                 user_doc = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
                 if user_doc and user_doc.get("active", True):
-                    return User(**user_doc)
+                    return await _build_user(user_doc, payload.get("impersonated_by"))
         except jwt.PyJWTError:
             pass
     # Fall back to Google session token (cookie, or a session token sent as bearer)
@@ -831,8 +1033,11 @@ async def _authenticate(cookie_token: Optional[str], bearer: Optional[str]) -> O
                 return None
             user_doc = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
             if user_doc and user_doc.get("active", True):
-                return User(**user_doc)
+                return await _build_user(user_doc)
     return None
+
+
+READ_ONLY_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 async def get_current_user(request: Request) -> User:
@@ -842,7 +1047,31 @@ async def get_current_user(request: Request) -> User:
     user = await _authenticate(cookie_token, bearer)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Read-only roles are enforced here rather than route by route. Every
+    # authenticated endpoint resolves through this dependency, so a viewer
+    # cannot write even to an endpoint added later that forgot to check --
+    # the safe default costs nothing and cannot be forgotten.
+    if request.method not in READ_ONLY_METHODS and user.org_role == ROLE_VIEWER:
+        raise HTTPException(
+            status_code=403,
+            detail="Your role is view-only. Ask an owner to change your role to make changes.",
+        )
+
+    # Impersonation is for diagnosis, never for acting as the customer. A
+    # support session can look at anything but must not alter the tenant's
+    # compliance record.
+    if request.method not in READ_ONLY_METHODS and user.impersonated_by:
+        raise HTTPException(
+            status_code=403,
+            detail="Impersonated sessions are read-only.",
+        )
     return user
+
+
+# Lets tenancy.require_role() build dependencies against the real authentication
+# function without tenancy.py importing server.py back (a circular import).
+tenancy.register_current_user_dependency(get_current_user)
 
 
 @api_router.post("/auth/register")
@@ -852,7 +1081,7 @@ async def register(data: RegisterInput, response: Response):
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     user_id = f"user_{uuid.uuid4().hex[:12]}"
-    await db.users.insert_one({
+    user_doc = {
         "user_id": user_id,
         "email": email,
         "name": data.name,
@@ -861,23 +1090,44 @@ async def register(data: RegisterInput, response: Response):
         "picture": None,
         "password_hash": pwd_context.hash(data.password),
         "created_at": now_iso(),
-    })
+        # Platform administration is never grantable through the API. It is set
+        # only by scripts/grant_admin.py, so self-registration cannot reach it.
+        "platform_role": tenancy.PLATFORM_ROLE_USER,
+    }
+    await db.users.insert_one(dict(user_doc))
+    # Every account owns an organisation from the moment it exists, so no
+    # request can ever run without tenant context.
+    org = await ensure_org_for_user(user_doc)
     response.delete_cookie("session_token", path="/")
     token = create_jwt(user_id)
-    return {"token": token, "user": {"user_id": user_id, "email": email, "name": data.name, "role": data.role, "region": "UK"}}
+    return {"token": token, "user": {"user_id": user_id, "email": email, "name": data.name,
+                                     "role": data.role, "region": org.get("region", "UK"),
+                                     "org_id": org["org_id"], "org_role": ROLE_OWNER}}
 
 
-async def _seed_template(new_user_id: str, inviter_id: str, new_email: str):
-    inviter = await db.users.find_one({"user_id": inviter_id}, {"_id": 0}) or {}
-    await db.users.update_one({"user_id": new_user_id}, {"$set": {"region": inviter.get("region", "UK")}})
-    for l in await db.links.find({"user_id": inviter_id}, {"_id": 0}).to_list(1000):
-        await db.links.insert_one({**l, "id": f"link_{uuid.uuid4().hex[:10]}", "user_id": new_user_id, "created_at": now_iso()})
-    rs = await db.reminder_settings.find_one({"user_id": inviter_id}, {"_id": 0})
+async def _seed_template(new_org_id: str, inviter_org_id: str, new_email: str):
+    """Copy an inviter's starter content into a newly created organisation.
+
+    This backs the referral-style invite, where an operator invites a *different*
+    haulage firm to run its own account. The new org is separate and empty; it
+    only inherits reference links and a reminder template as a starting point.
+    Copying now runs org-to-org rather than user-to-user, so a multi-member
+    inviting org contributes its shared links rather than one member's.
+    """
+    inviter_org = await db.organisations.find_one({"org_id": inviter_org_id}, {"_id": 0}) or {}
+    await db.organisations.update_one(
+        {"org_id": new_org_id}, {"$set": {"region": inviter_org.get("region", "UK")}})
+
+    for link in await db.links.find({"org_id": inviter_org_id}, {"_id": 0}).to_list(1000):
+        await db.links.insert_one({**link, "id": f"link_{uuid.uuid4().hex[:10]}",
+                                   "org_id": new_org_id, "created_at": now_iso()})
+
+    rs = await db.reminder_settings.find_one({"org_id": inviter_org_id}, {"_id": 0})
     if rs and rs.get("recipients"):
         base = rs["recipients"][0]
         await db.reminder_settings.update_one(
-            {"user_id": new_user_id},
-            {"$set": {"user_id": new_user_id, "recipients": [{"email": new_email, "areas": base.get("areas", []), "schedule": base.get("schedule", "weekly")}]}},
+            {"org_id": new_org_id},
+            {"$set": {"org_id": new_org_id, "recipients": [{"email": new_email, "areas": base.get("areas", []), "schedule": base.get("schedule", "weekly")}]}},
             upsert=True,
         )
 
@@ -887,20 +1137,36 @@ async def create_invitation(data: InviteInput, user: User = Depends(get_current_
     email = data.email.lower().strip()
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="That email already has an account")
+    # Only an owner may hand out access to the organisation's own data.
+    # Referral invites create a separate account, so any member may send one.
+    if data.kind == "org" and not tenancy.has_role(user, ROLE_OWNER):
+        raise HTTPException(status_code=403,
+                            detail="Only the organisation owner can invite colleagues")
     token = secrets.token_urlsafe(32)
     inv = {
         "id": f"inv_{uuid.uuid4().hex[:10]}", "email": email, "token": token,
         "invited_by": user.user_id, "inviter_name": user.name, "status": "pending",
+        "kind": data.kind, "role": data.role, "org_id": user.org_id,
         "created_at": now_iso(), "expires_at": (datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
     }
     await db.invitations.insert_one(inv)
     link = f"{(data.base_url or '').rstrip('/')}/accept-invite?token={token}"
+    org = await db.organisations.find_one({"org_id": user.org_id}, {"_id": 0}) or {}
+    org_name = org.get("name") or "their organisation"
+    pitch = (
+        f"{user.name} has invited you to join <b>{org_name}</b> on HaulCheck as "
+        f"{'an' if data.role[0] in 'aeiou' else 'a'} {data.role}. You will share the same fleet, "
+        "drivers and compliance records. Click below to choose a password and get started."
+        if data.kind == "org" else
+        f"{user.name} has invited you to set up your own HaulCheck compliance account. "
+        "Click below to choose a password and get started."
+    )
     html = (
         "<div style='background:#f1f5f9;padding:32px 0;font-family:Arial,Helvetica,sans-serif;'>"
         "<table role='presentation' width='560' align='center' cellpadding='0' cellspacing='0' style='background:#fff;border-radius:12px;padding:32px;margin:0 auto;'>"
         f"<tr><td><p style='margin:0;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#64748b;font-weight:700;'>HaulCheck Compliance</p>"
         f"<h1 style='margin:6px 0 0;font-size:22px;color:#0f172a;'>You've been invited</h1>"
-        f"<p style='margin:16px 0 0;font-size:14px;color:#334155;line-height:1.6;'>{user.name} has invited you to set up your own HaulCheck compliance account. Click below to choose a password and get started.</p>"
+        f"<p style='margin:16px 0 0;font-size:14px;color:#334155;line-height:1.6;'>{pitch}</p>"
         f"<p style='margin:24px 0;'><a href='{link}' style='background:#0f172a;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:600;'>Accept invitation</a></p>"
         f"<p style='margin:8px 0 0;font-size:12px;color:#94a3b8;'>Or paste this link: {link}</p>"
         "<p style='margin:16px 0 0;font-size:12px;color:#94a3b8;'>This invitation expires in 14 days.</p>"
@@ -986,30 +1252,162 @@ async def accept_invite(data: AcceptInviteInput, response: Response):
     if len(data.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     user_id = f"user_{uuid.uuid4().hex[:12]}"
-    await db.users.insert_one({
+    user_doc = {
         "user_id": user_id, "email": email, "name": data.name, "role": "manager",
         "region": "UK", "picture": None, "password_hash": pwd_context.hash(data.password),
         "invited_by": inv["invited_by"], "created_at": now_iso(), "last_login_at": now_iso(),
-    })
-    await _seed_template(user_id, inv["invited_by"], email)
+        "platform_role": tenancy.PLATFORM_ROLE_USER,
+    }
+    await db.users.insert_one(dict(user_doc))
+
+    # Invitations predating the org layer carry no "kind"; treat them as
+    # referrals so anything already in a mailbox behaves exactly as promised.
+    kind = inv.get("kind", "referral")
+    inviter_org_id = inv.get("org_id")
+    if not inviter_org_id:
+        inviter = await db.users.find_one({"user_id": inv["invited_by"]}, {"_id": 0})
+        inviter_org_id = (await ensure_org_for_user(inviter))["org_id"] if inviter else None
+
+    if kind == "org" and inviter_org_id:
+        # Join the inviter's organisation: no new org, shared records.
+        org_id = inviter_org_id
+        role = inv.get("role", ROLE_MANAGER)
+        await db.org_members.update_one(
+            {"org_id": org_id, "user_id": user_id},
+            {"$set": OrgMember(org_id=org_id, user_id=user_id, role=role).model_dump()},
+            upsert=True,
+        )
+        await db.users.update_one({"user_id": user_id}, {"$set": {"org_id": org_id}})
+    else:
+        # Referral: a separate organisation of their own, seeded from the inviter's.
+        org = await ensure_org_for_user(user_doc)
+        org_id = org["org_id"]
+        role = ROLE_OWNER
+        if inviter_org_id:
+            await _seed_template(org_id, inviter_org_id, email)
+
     await db.invitations.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": now_iso(), "accepted_user_id": user_id}})
-    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    org_doc = await db.organisations.find_one({"org_id": org_id}, {"_id": 0}) or {}
     response.delete_cookie("session_token", path="/")
-    return {"token": create_jwt(user_id), "user": {"user_id": user_id, "email": email, "name": data.name, "role": "manager", "region": fresh.get("region", "UK")}}
+    return {"token": create_jwt(user_id),
+            "user": {"user_id": user_id, "email": email, "name": data.name, "role": "manager",
+                     "region": org_doc.get("region", "UK"), "org_id": org_id, "org_role": role}}
 
 
 @api_router.put("/settings/region")
 async def set_region(payload: dict, user: User = Depends(get_current_user)):
+    """Set the operating jurisdiction (UK/DVSA or IE/RSA).
+
+    Region belongs to the organisation, so this changes it for every member.
+    Kept at its original path because the existing frontend and tests call it;
+    the same field is also editable via PUT /api/organisation.
+    """
     region = payload.get("region", "UK")
     if region not in ("UK", "IE"):
         raise HTTPException(status_code=400, detail="Invalid region")
-    await db.users.update_one({"user_id": user.user_id}, {"$set": {"region": region}})
+    if not tenancy.has_role(user, ROLE_MANAGER):
+        raise HTTPException(status_code=403, detail="Viewers cannot change organisation settings")
+    await db.organisations.update_one({"org_id": user.org_id}, {"$set": {"region": region}})
     return {"ok": True, "region": region}
+
+
+# ---------- Organisation ----------
+async def _member_rows(org_id: str) -> list:
+    """Members of an organisation, joined to their user records."""
+    members = await db.org_members.find({"org_id": org_id}, {"_id": 0}).to_list(500)
+    if not members:
+        return []
+    users = await db.users.find(
+        {"user_id": {"$in": [m["user_id"] for m in members]}},
+        {"_id": 0, "user_id": 1, "email": 1, "name": 1, "active": 1, "last_login_at": 1},
+    ).to_list(500)
+    by_id = {u["user_id"]: u for u in users}
+    rows = []
+    for m in members:
+        u = by_id.get(m["user_id"], {})
+        rows.append({
+            "user_id": m["user_id"],
+            "role": m.get("role", ROLE_MANAGER),
+            "joined_at": m.get("joined_at"),
+            "email": u.get("email", ""),
+            "name": u.get("name", ""),
+            "active": u.get("active", True),
+            "last_login_at": u.get("last_login_at"),
+        })
+    rows.sort(key=lambda r: (tenancy.ROLE_RANK.get(r["role"], 0) * -1, r["name"].lower()))
+    return rows
+
+
+@api_router.get("/organisation")
+async def get_organisation(user: User = Depends(get_current_user)):
+    org = await db.organisations.find_one({"org_id": user.org_id}, {"_id": 0}) or {}
+    return {**org, "your_role": user.org_role, "members": await _member_rows(user.org_id)}
+
+
+@api_router.put("/organisation")
+async def update_organisation(data: OrgUpdateInput, user: User = Depends(get_current_user)):
+    if not tenancy.has_role(user, ROLE_OWNER):
+        raise HTTPException(status_code=403, detail="Only the organisation owner can change these settings")
+    updates = {k: v for k, v in data.model_dump(exclude_none=True).items()}
+    if not updates:
+        return {"ok": True}
+    await db.organisations.update_one({"org_id": user.org_id}, {"$set": updates})
+    return {"ok": True, **updates}
+
+
+@api_router.get("/organisation/members")
+async def list_org_members(user: User = Depends(get_current_user)):
+    return await _member_rows(user.org_id)
+
+
+@api_router.put("/organisation/members/{member_user_id}/role")
+async def set_org_member_role(member_user_id: str, data: OrgMemberRoleInput,
+                              user: User = Depends(get_current_user)):
+    if not tenancy.has_role(user, ROLE_OWNER):
+        raise HTTPException(status_code=403, detail="Only the organisation owner can change roles")
+    member = await db.org_members.find_one({"org_id": user.org_id, "user_id": member_user_id}, {"_id": 0})
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found in this organisation")
+    # An organisation must always retain at least one owner, otherwise nobody
+    # can manage members or settings and the account becomes unadministrable.
+    if member.get("role") == ROLE_OWNER and data.role != ROLE_OWNER:
+        owners = await db.org_members.count_documents({"org_id": user.org_id, "role": ROLE_OWNER})
+        if owners <= 1:
+            raise HTTPException(status_code=400,
+                                detail="This is the only owner. Promote another member first.")
+    await db.org_members.update_one({"org_id": user.org_id, "user_id": member_user_id},
+                                    {"$set": {"role": data.role}})
+    if data.role == ROLE_OWNER:
+        await db.organisations.update_one({"org_id": user.org_id},
+                                          {"$set": {"owner_user_id": member_user_id}})
+    return {"ok": True, "role": data.role}
+
+
+@api_router.delete("/organisation/members/{member_user_id}")
+async def remove_org_member(member_user_id: str, user: User = Depends(get_current_user)):
+    """Remove someone from the organisation.
+
+    Their records stay with the organisation -- the data belongs to the company,
+    not the individual, and removing a colleague must never delete inspection
+    history. The user account itself survives too; they simply have no org until
+    they log in again, at which point they are given a private one.
+    """
+    if not tenancy.has_role(user, ROLE_OWNER):
+        raise HTTPException(status_code=403, detail="Only the organisation owner can remove members")
+    if member_user_id == user.user_id:
+        raise HTTPException(status_code=400, detail="You cannot remove yourself from your own organisation")
+    member = await db.org_members.find_one({"org_id": user.org_id, "user_id": member_user_id}, {"_id": 0})
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found in this organisation")
+    await db.org_members.delete_one({"org_id": user.org_id, "user_id": member_user_id})
+    await db.users.update_one({"user_id": member_user_id}, {"$unset": {"org_id": ""}})
+    await db.user_sessions.delete_many({"user_id": member_user_id})
+    return {"ok": True}
 
 
 @api_router.get("/operator")
 async def get_operator(user: User = Depends(get_current_user)):
-    doc = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0})
+    doc = await db.operator.find_one(tenant_filter(user), {"_id": 0})
     return doc or {}
 
 
@@ -1017,8 +1415,9 @@ async def get_operator(user: User = Depends(get_current_user)):
 async def update_operator(data: OperatorInput, user: User = Depends(get_current_user)):
     payload = data.model_dump()
     payload["user_id"] = user.user_id
+    payload["org_id"] = user.org_id
     payload["updated_at"] = now_iso()
-    await db.operator.update_one({"user_id": user.user_id}, {"$set": payload}, upsert=True)
+    await db.operator.update_one(tenant_filter(user), {"$set": payload}, upsert=True)
     return {"ok": True}
 
 
@@ -1031,10 +1430,19 @@ async def login(data: LoginInput, response: Response):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if user_doc.get("active", True) is False:
         raise HTTPException(status_code=403, detail="Your account has been deactivated. Please contact the operator who invited you.")
+    org = await ensure_org_for_user(user_doc)
+    if not org.get("active", True):
+        raise HTTPException(status_code=403, detail="This organisation's account has been suspended. Please contact support.")
+    membership = await db.org_members.find_one(
+        {"org_id": org["org_id"], "user_id": user_doc["user_id"]}, {"_id": 0})
     await db.users.update_one({"user_id": user_doc["user_id"]}, {"$set": {"last_login_at": now_iso()}})
     response.delete_cookie("session_token", path="/")
     token = create_jwt(user_doc["user_id"])
-    return {"token": token, "user": {"user_id": user_doc["user_id"], "email": user_doc["email"], "name": user_doc["name"], "role": user_doc.get("role", "manager")}}
+    return {"token": token, "user": {"user_id": user_doc["user_id"], "email": user_doc["email"],
+                                     "name": user_doc["name"], "role": user_doc.get("role", "manager"),
+                                     "org_id": org["org_id"], "region": org.get("region", "UK"),
+                                     "org_role": (membership or {}).get("role", ROLE_OWNER),
+                                     "platform_role": user_doc.get("platform_role", tenancy.PLATFORM_ROLE_USER)}}
 
 
 @api_router.post("/auth/forgot-password")
@@ -1117,10 +1525,14 @@ async def google_session(request: Request, response: Response):
         user_doc = {
             "user_id": user_id, "email": email, "name": data.get("name", ""),
             "role": "manager", "picture": data.get("picture"), "created_at": now_iso(),
+            "platform_role": tenancy.PLATFORM_ROLE_USER,
         }
         await db.users.insert_one(dict(user_doc))
     else:
         user_id = user_doc["user_id"]
+    # Provision (or resolve) the organisation before the session is issued, so a
+    # Google-authenticated request never reaches a route without tenant context.
+    org = await ensure_org_for_user(user_doc)
     await db.users.update_one({"user_id": user_id}, {"$set": {"last_login_at": now_iso()}})
     session_token = data["session_token"]
     await db.user_sessions.insert_one({
@@ -1132,7 +1544,8 @@ async def google_session(request: Request, response: Response):
     response.set_cookie(key="session_token", value=session_token, httponly=True,
                         secure=True, samesite="none", path="/", max_age=7 * 24 * 60 * 60)
     return {"user": {"user_id": user_id, "email": email, "name": data.get("name", ""),
-                     "role": "manager", "picture": data.get("picture")}}
+                     "role": "manager", "picture": data.get("picture"),
+                     "org_id": org["org_id"], "region": org.get("region", "UK")}}
 
 
 @api_router.get("/auth/me", response_model=User)
@@ -1152,7 +1565,7 @@ async def logout(request: Request, response: Response):
 # ---------- Vehicles ----------
 @api_router.get("/vehicles")
 async def list_vehicles(user: User = Depends(get_current_user)):
-    docs = await db.vehicles.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
+    docs = await db.vehicles.find(tenant_filter(user), {"_id": 0}).to_list(1000)
     for d in docs:
         d["mot_status"] = compliance_status(days_until(d.get("mot_due")))
         d["service_status"] = compliance_status(days_until(d.get("service_due")))
@@ -1164,14 +1577,14 @@ async def list_vehicles(user: User = Depends(get_current_user)):
 
 @api_router.post("/vehicles")
 async def create_vehicle(data: VehicleInput, user: User = Depends(get_current_user)):
-    v = Vehicle(**data.model_dump(), user_id=user.user_id)
+    v = Vehicle(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.vehicles.insert_one(v.model_dump())
     return v.model_dump()
 
 
 @api_router.put("/vehicles/{vid}")
 async def update_vehicle(vid: str, data: VehicleInput, user: User = Depends(get_current_user)):
-    res = await db.vehicles.update_one({"id": vid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.vehicles.update_one({"id": vid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Vehicle not found")
     return {"ok": True}
@@ -1179,14 +1592,14 @@ async def update_vehicle(vid: str, data: VehicleInput, user: User = Depends(get_
 
 @api_router.delete("/vehicles/{vid}")
 async def delete_vehicle(vid: str, user: User = Depends(get_current_user)):
-    await db.vehicles.delete_one({"id": vid, "user_id": user.user_id})
+    await db.vehicles.delete_one({"id": vid, **tenant_filter(user)})
     return {"ok": True}
 
 
 # ---------- Trailers ----------
 @api_router.get("/trailers")
 async def list_trailers(user: User = Depends(get_current_user)):
-    docs = await db.trailers.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
+    docs = await db.trailers.find(tenant_filter(user), {"_id": 0}).to_list(1000)
     for d in docs:
         d["mot_status"] = compliance_status(days_until(d.get("mot_due")))
         d["service_status"] = compliance_status(days_until(d.get("service_due")))
@@ -1195,14 +1608,14 @@ async def list_trailers(user: User = Depends(get_current_user)):
 
 @api_router.post("/trailers")
 async def create_trailer(data: TrailerInput, user: User = Depends(get_current_user)):
-    t = Trailer(**data.model_dump(), user_id=user.user_id)
+    t = Trailer(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.trailers.insert_one(t.model_dump())
     return t.model_dump()
 
 
 @api_router.put("/trailers/{tid}")
 async def update_trailer(tid: str, data: TrailerInput, user: User = Depends(get_current_user)):
-    res = await db.trailers.update_one({"id": tid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.trailers.update_one({"id": tid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Trailer not found")
     return {"ok": True}
@@ -1210,7 +1623,7 @@ async def update_trailer(tid: str, data: TrailerInput, user: User = Depends(get_
 
 @api_router.delete("/trailers/{tid}")
 async def delete_trailer(tid: str, user: User = Depends(get_current_user)):
-    await db.trailers.delete_one({"id": tid, "user_id": user.user_id})
+    await db.trailers.delete_one({"id": tid, **tenant_filter(user)})
     return {"ok": True}
 
 
@@ -1231,7 +1644,7 @@ async def upload_file(file: UploadFile = File(...), user: User = Depends(get_cur
         raise HTTPException(status_code=502, detail="Upload failed")
     await db.files.insert_one({
         "id": file_id,
-        "user_id": user.user_id,
+        "user_id": user.user_id, "org_id": user.org_id,
         "storage_path": result["path"],
         "original_filename": file.filename,
         "content_type": content_type,
@@ -1251,7 +1664,7 @@ async def download_file(file_id: str, request: Request, auth: Optional[str] = Qu
     user = await _authenticate(cookie_token, bearer)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    rec = await db.files.find_one({"id": file_id, "user_id": user.user_id, "is_deleted": False}, {"_id": 0})
+    rec = await db.files.find_one({"id": file_id, **tenant_filter(user), "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
     data, ct = get_object(rec["storage_path"])
@@ -1262,8 +1675,8 @@ async def download_file(file_id: str, request: Request, auth: Optional[str] = Qu
 # ---------- Drivers ----------
 @api_router.get("/drivers")
 async def list_drivers(user: User = Depends(get_current_user)):
-    docs = await db.drivers.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    training = await db.training.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    docs = await db.drivers.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    training = await db.training.find(tenant_filter(user), {"_id": 0}).to_list(2000)
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=365 * 5)).isoformat()
     for d in docs:
         d["licence_status"] = compliance_status(days_until(d.get("licence_expiry")))
@@ -1283,14 +1696,14 @@ async def list_drivers(user: User = Depends(get_current_user)):
 
 @api_router.post("/drivers")
 async def create_driver(data: DriverInput, user: User = Depends(get_current_user)):
-    d = Driver(**data.model_dump(), user_id=user.user_id)
+    d = Driver(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.drivers.insert_one(d.model_dump())
     return d.model_dump()
 
 
 @api_router.put("/drivers/{did}")
 async def update_driver(did: str, data: DriverInput, user: User = Depends(get_current_user)):
-    res = await db.drivers.update_one({"id": did, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.drivers.update_one({"id": did, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Driver not found")
     return {"ok": True}
@@ -1298,23 +1711,23 @@ async def update_driver(did: str, data: DriverInput, user: User = Depends(get_cu
 
 @api_router.delete("/drivers/{did}")
 async def delete_driver(did: str, user: User = Depends(get_current_user)):
-    await db.drivers.delete_one({"id": did, "user_id": user.user_id})
+    await db.drivers.delete_one({"id": did, **tenant_filter(user)})
     return {"ok": True}
 
 
 @api_router.post("/drivers/{did}/access-code")
 async def issue_driver_code(did: str, user: User = Depends(get_current_user)):
-    driver = await db.drivers.find_one({"id": did, "user_id": user.user_id}, {"_id": 0})
+    driver = await db.drivers.find_one({"id": did, **tenant_filter(user)}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
     code = await _generate_driver_code()
-    await db.drivers.update_one({"id": did, "user_id": user.user_id}, {"$set": {"access_code": code}})
+    await db.drivers.update_one({"id": did, **tenant_filter(user)}, {"$set": {"access_code": code}})
     return {"ok": True, "access_code": code}
 
 
 @api_router.delete("/drivers/{did}/access-code")
 async def revoke_driver_code(did: str, user: User = Depends(get_current_user)):
-    await db.drivers.update_one({"id": did, "user_id": user.user_id}, {"$set": {"access_code": ""}})
+    await db.drivers.update_one({"id": did, **tenant_filter(user)}, {"$set": {"access_code": ""}})
     return {"ok": True}
 
 
@@ -1341,23 +1754,23 @@ def _overdue_severity(a: dict) -> str:
     return "major"
 
 
-async def sync_overdue_alerts(user_id: str, force: bool = False):
+async def sync_overdue_alerts(org_id: str, force: bool = False):
     """Reconcile the alerts panel with items that are past their due date (dedup + auto-clear on renewal)."""
     import time
     now = time.time()
-    if not force and now - _last_overdue_sync.get(user_id, 0) < 120:
+    if not force and now - _last_overdue_sync.get(org_id, 0) < 120:
         return
-    _last_overdue_sync[user_id] = now
-    stats = await gather_stats(user_id)
+    _last_overdue_sync[org_id] = now
+    stats = await gather_stats(org_id)
     overdue = {}
     for a in stats["alerts"]:
         if a.get("status") != "expired":
             continue
         key = f"overdue|{a.get('type')}|{a.get('name')}|{a.get('item')}"
         overdue[key] = a
-    existing = await db.alerts.find({"user_id": user_id, "dedup_key": {"$ne": ""}}, {"_id": 0}).to_list(1000)
+    existing = await db.alerts.find({"org_id": org_id, "dedup_key": {"$ne": ""}}, {"_id": 0}).to_list(1000)
     existing_keys = {e["dedup_key"] for e in existing}
-    dismissed_doc = await db.dismissed_alerts.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    dismissed_doc = await db.dismissed_alerts.find_one({"org_id": org_id}, {"_id": 0}) or {}
     dismissed = set(dismissed_doc.get("keys", []))
     for key, a in overdue.items():
         if key in existing_keys or key in dismissed:
@@ -1366,7 +1779,7 @@ async def sync_overdue_alerts(user_id: str, force: bool = False):
         overdue_txt = f"{abs(days)} day(s) overdue" if isinstance(days, int) else "action needed"
         veh = a["name"] if a.get("type") in ("vehicle", "trailer", "pmi", "wheel") else ""
         alert = Alert(
-            user_id=user_id, type="overdue", severity=_overdue_severity(a),
+            org_id=org_id, type="overdue", severity=_overdue_severity(a),
             title=f"{a['name']} — {a['item']} {overdue_txt}",
             message=f"{a['item']} for {a['name']} is past its due date. Renew it to restore compliance.",
             vehicle_reg=veh, link=_OVERDUE_LINK.get(a.get("type"), ""), dedup_key=key,
@@ -1374,44 +1787,44 @@ async def sync_overdue_alerts(user_id: str, force: bool = False):
         await db.alerts.insert_one(alert.model_dump())
     stale = [k for k in existing_keys if k not in overdue]
     if stale:
-        await db.alerts.delete_many({"user_id": user_id, "dedup_key": {"$in": stale}})
+        await db.alerts.delete_many({"org_id": org_id, "dedup_key": {"$in": stale}})
     kept_dismissed = dismissed & set(overdue.keys())
     if kept_dismissed != dismissed:
         await db.dismissed_alerts.update_one(
-            {"user_id": user_id}, {"$set": {"user_id": user_id, "keys": list(kept_dismissed)}}, upsert=True)
+            {"org_id": org_id}, {"$set": {"org_id": org_id, "keys": list(kept_dismissed)}}, upsert=True)
 
 
 @api_router.get("/alerts")
 async def list_alerts(user: User = Depends(get_current_user)):
-    await sync_overdue_alerts(user.user_id)
-    return await db.alerts.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    await sync_overdue_alerts(user.org_id)
+    return await db.alerts.find(tenant_filter(user), {"_id": 0}).sort("created_at", -1).to_list(200)
 
 
 @api_router.get("/alerts/unread-count")
 async def alerts_unread_count(user: User = Depends(get_current_user)):
-    await sync_overdue_alerts(user.user_id)
-    return {"count": await db.alerts.count_documents({"user_id": user.user_id, "read": False})}
+    await sync_overdue_alerts(user.org_id)
+    return {"count": await db.alerts.count_documents({**tenant_filter(user), "read": False})}
 
 
 @api_router.patch("/alerts/{aid}/read")
 async def mark_alert_read(aid: str, user: User = Depends(get_current_user)):
-    await db.alerts.update_one({"id": aid, "user_id": user.user_id}, {"$set": {"read": True}})
+    await db.alerts.update_one({"id": aid, **tenant_filter(user)}, {"$set": {"read": True}})
     return {"ok": True}
 
 
 @api_router.post("/alerts/read-all")
 async def mark_all_alerts_read(user: User = Depends(get_current_user)):
-    await db.alerts.update_many({"user_id": user.user_id, "read": False}, {"$set": {"read": True}})
+    await db.alerts.update_many({**tenant_filter(user), "read": False}, {"$set": {"read": True}})
     return {"ok": True}
 
 
 @api_router.delete("/alerts/{aid}")
 async def delete_alert(aid: str, user: User = Depends(get_current_user)):
-    doc = await db.alerts.find_one({"id": aid, "user_id": user.user_id}, {"_id": 0})
-    await db.alerts.delete_one({"id": aid, "user_id": user.user_id})
+    doc = await db.alerts.find_one({"id": aid, **tenant_filter(user)}, {"_id": 0})
+    await db.alerts.delete_one({"id": aid, **tenant_filter(user)})
     if doc and doc.get("dedup_key"):
         await db.dismissed_alerts.update_one(
-            {"user_id": user.user_id}, {"$addToSet": {"keys": doc["dedup_key"]}}, upsert=True)
+            tenant_filter(user), {"$addToSet": {"keys": doc["dedup_key"]}}, upsert=True)
     return {"ok": True}
 
 
@@ -1446,7 +1859,7 @@ async def driver_login(payload: dict):
 async def driver_me(driver: dict = Depends(get_current_driver)):
     profile = _driver_profile(driver)
     docs = await db.documents.find(
-        {"user_id": driver["user_id"], "$or": [{"driver_id": driver["id"]}, {"driver_name": driver.get("name")}]},
+        {"org_id": driver["org_id"], "$or": [{"driver_id": driver["id"]}, {"driver_name": driver.get("name")}]},
         {"_id": 0},
     ).sort("created_at", -1).to_list(200)
     profile["documents"] = [{"id": d["id"], "title": d.get("title"), "doc_type": d.get("doc_type"),
@@ -1459,17 +1872,17 @@ async def driver_vehicle(driver: dict = Depends(get_current_driver)):
     reg = driver.get("assigned_vehicle_reg")
     if not reg:
         return {"vehicle": None, "documents": []}
-    veh = await db.vehicles.find_one({"user_id": driver["user_id"], "registration": reg}, {"_id": 0})
+    veh = await db.vehicles.find_one({"org_id": driver["org_id"], "registration": reg}, {"_id": 0})
     if veh:
         for k, f in [("mot_status", "mot_due"), ("service_status", "service_due"), ("tax_status", "tax_due")]:
             veh[k] = compliance_status(days_until(veh.get(f)))
-    docs = await db.documents.find({"user_id": driver["user_id"], "reference": reg}, {"_id": 0}).to_list(50)
+    docs = await db.documents.find({"org_id": driver["org_id"], "reference": reg}, {"_id": 0}).to_list(50)
     return {"vehicle": veh, "documents": [{"id": d["id"], "title": d.get("title"), "attachments": d.get("attachments", [])} for d in docs]}
 
 
 @api_router.get("/driver/vehicles")
 async def driver_vehicles(driver: dict = Depends(get_current_driver)):
-    docs = await db.vehicles.find({"user_id": driver["user_id"]}, {"_id": 0, "registration": 1}).to_list(1000)
+    docs = await db.vehicles.find({"org_id": driver["org_id"]}, {"_id": 0, "registration": 1}).to_list(1000)
     return [d["registration"] for d in docs]
 
 
@@ -1499,6 +1912,7 @@ async def driver_upload(file: UploadFile = File(...), driver: dict = Depends(get
 async def driver_walkaround(data: WalkaroundInput, driver: dict = Depends(get_current_driver)):
     payload = data.model_dump()
     payload["user_id"] = driver["user_id"]
+    payload["org_id"] = driver["org_id"]
     payload["driver_name"] = driver.get("name", "")
     if not payload.get("vehicle_reg"):
         payload["vehicle_reg"] = driver.get("assigned_vehicle_reg", "")
@@ -1506,7 +1920,7 @@ async def driver_walkaround(data: WalkaroundInput, driver: dict = Depends(get_cu
     await db.walkaround_checks.insert_one(check.model_dump())
     if check.result == "defects_found":
         failed = [c.get("item") for c in (check.checklist or []) if not c.get("ok")]
-        await create_alert(driver["user_id"], "walkaround_defect", "major",
+        await create_alert(driver["org_id"], "walkaround_defect", "major",
                            f"Walkaround defect — {check.vehicle_reg}",
                            check.defects_noted or (", ".join(failed) if failed else "Defects found on daily walkaround"),
                            vehicle_reg=check.vehicle_reg, driver_name=check.driver_name, link="/maintenance")
@@ -1516,6 +1930,7 @@ async def driver_walkaround(data: WalkaroundInput, driver: dict = Depends(get_cu
 @api_router.post("/driver/defect")
 async def driver_defect(payload: dict, driver: dict = Depends(get_current_driver)):
     payload["user_id"] = driver["user_id"]
+    payload["org_id"] = driver["org_id"]
     payload["reported_by"] = driver.get("name", "")
     if not payload.get("vehicle_reg"):
         payload["vehicle_reg"] = driver.get("assigned_vehicle_reg", "")
@@ -1523,7 +1938,7 @@ async def driver_defect(payload: dict, driver: dict = Depends(get_current_driver
         raise HTTPException(status_code=400, detail="Describe the defect")
     d = DefectReport(**{k: v for k, v in payload.items() if k in DefectReport.model_fields})
     await db.defects.insert_one(d.model_dump())
-    await create_alert(driver["user_id"], "defect_report", d.severity or "major",
+    await create_alert(driver["org_id"], "defect_report", d.severity or "major",
                        f"Defect reported — {d.vehicle_reg}", d.description or "Defect reported by driver",
                        vehicle_reg=d.vehicle_reg, driver_name=d.reported_by, link="/maintenance")
     return d.model_dump()
@@ -1532,17 +1947,17 @@ async def driver_defect(payload: dict, driver: dict = Depends(get_current_driver
 @api_router.post("/driver/tacho/analyse")
 async def driver_tacho_analyse(payload: dict, driver: dict = Depends(get_current_driver)):
     file_id = payload.get("file_id")
-    rec = await db.files.find_one({"id": file_id, "user_id": driver["user_id"], "is_deleted": False}, {"_id": 0})
+    rec = await db.files.find_one({"id": file_id, "org_id": driver["org_id"], "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
     fdata, ct = get_object(rec["storage_path"])
     ct = rec.get("content_type") or ct
     ext = (rec.get("original_filename") or "").rsplit(".", 1)[-1].lower()
-    region_doc = await db.users.find_one({"user_id": driver["user_id"]}, {"_id": 0, "region": 1}) or {}
-    result = await run_tacho_analysis(fdata, ct, ext, region_doc.get("region", "UK"), driver.get("name", "")) or {}
+    # get_current_driver resolves region from the driver's organisation.
+    result = await run_tacho_analysis(fdata, ct, ext, driver.get("region", "UK"), driver.get("name", "")) or {}
     infr = result.get("infringements") or []
     analysis = TachoAnalysis(
-        user_id=driver["user_id"], driver_name=driver.get("name", ""),
+        user_id=driver["user_id"], org_id=driver["org_id"], driver_name=driver.get("name", ""),
         period=result.get("period") or "", summary=result.get("summary") or "",
         total_infringements=result.get("total_infringements") if isinstance(result.get("total_infringements"), int) else len(infr),
         infringements=infr, confidence=float(result.get("confidence") or 0), file_id=file_id,
@@ -1564,7 +1979,7 @@ async def driver_download_file(file_id: str, request: Request, auth: Optional[st
             pass
     if not driver:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    rec = await db.files.find_one({"id": file_id, "user_id": driver["user_id"], "is_deleted": False}, {"_id": 0})
+    rec = await db.files.find_one({"id": file_id, "org_id": driver["org_id"], "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
     fdata, ct = get_object(rec["storage_path"])
@@ -1575,7 +1990,7 @@ async def driver_download_file(file_id: str, request: Request, auth: Optional[st
 # ---------- Driver Training ----------
 @api_router.get("/training")
 async def list_training(driver_id: Optional[str] = Query(None), user: User = Depends(get_current_user)):
-    q = {"user_id": user.user_id}
+    q = tenant_filter(user)
     if driver_id:
         q["driver_id"] = driver_id
     docs = await db.training.find(q, {"_id": 0}).sort("expiry_date", 1).to_list(1000)
@@ -1587,14 +2002,14 @@ async def list_training(driver_id: Optional[str] = Query(None), user: User = Dep
 
 @api_router.post("/training")
 async def create_training(data: TrainingInput, user: User = Depends(get_current_user)):
-    t = TrainingRecord(**data.model_dump(), user_id=user.user_id)
+    t = TrainingRecord(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.training.insert_one(t.model_dump())
     return t.model_dump()
 
 
 @api_router.put("/training/{tid}")
 async def update_training(tid: str, data: TrainingInput, user: User = Depends(get_current_user)):
-    res = await db.training.update_one({"id": tid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.training.update_one({"id": tid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Training record not found")
     return {"ok": True}
@@ -1602,14 +2017,14 @@ async def update_training(tid: str, data: TrainingInput, user: User = Depends(ge
 
 @api_router.delete("/training/{tid}")
 async def delete_training(tid: str, user: User = Depends(get_current_user)):
-    await db.training.delete_one({"id": tid, "user_id": user.user_id})
+    await db.training.delete_one({"id": tid, **tenant_filter(user)})
     return {"ok": True}
 
 
 # ---------- Documents ----------
 @api_router.get("/documents")
 async def list_documents(user: User = Depends(get_current_user)):
-    docs = await db.documents.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
+    docs = await db.documents.find(tenant_filter(user), {"_id": 0}).to_list(1000)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("expiry_date")))
         d["days_left"] = days_until(d.get("expiry_date"))
@@ -1618,14 +2033,14 @@ async def list_documents(user: User = Depends(get_current_user)):
 
 @api_router.post("/documents")
 async def create_document(data: DocInput, user: User = Depends(get_current_user)):
-    doc = ComplianceDoc(**data.model_dump(), user_id=user.user_id)
+    doc = ComplianceDoc(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.documents.insert_one(doc.model_dump())
     return doc.model_dump()
 
 
 @api_router.put("/documents/{docid}")
 async def update_document(docid: str, data: DocInput, user: User = Depends(get_current_user)):
-    res = await db.documents.update_one({"id": docid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.documents.update_one({"id": docid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"ok": True}
@@ -1633,14 +2048,14 @@ async def update_document(docid: str, data: DocInput, user: User = Depends(get_c
 
 @api_router.delete("/documents/{docid}")
 async def delete_document(docid: str, user: User = Depends(get_current_user)):
-    await db.documents.delete_one({"id": docid, "user_id": user.user_id})
+    await db.documents.delete_one({"id": docid, **tenant_filter(user)})
     return {"ok": True}
 
 
 # ---------- Web links (reference bookmarks) ----------
 @api_router.get("/links")
 async def list_links(user: User = Depends(get_current_user)):
-    docs = await db.links.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    docs = await db.links.find(tenant_filter(user), {"_id": 0}).sort("created_at", -1).to_list(1000)
     return docs
 
 
@@ -1649,7 +2064,7 @@ async def create_link(data: WebLinkInput, user: User = Depends(get_current_user)
     payload = data.model_dump()
     if payload["url"] and not payload["url"].startswith(("http://", "https://")):
         payload["url"] = "https://" + payload["url"]
-    link = WebLink(**payload, user_id=user.user_id)
+    link = WebLink(**payload, user_id=user.user_id, org_id=user.org_id)
     await db.links.insert_one(link.model_dump())
     return link.model_dump()
 
@@ -1659,7 +2074,7 @@ async def update_link(lid: str, data: WebLinkInput, user: User = Depends(get_cur
     payload = data.model_dump()
     if payload["url"] and not payload["url"].startswith(("http://", "https://")):
         payload["url"] = "https://" + payload["url"]
-    res = await db.links.update_one({"id": lid, "user_id": user.user_id}, {"$set": payload})
+    res = await db.links.update_one({"id": lid, **tenant_filter(user)}, {"$set": payload})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Link not found")
     return {"ok": True}
@@ -1667,26 +2082,26 @@ async def update_link(lid: str, data: WebLinkInput, user: User = Depends(get_cur
 
 @api_router.delete("/links/{lid}")
 async def delete_link(lid: str, user: User = Depends(get_current_user)):
-    await db.links.delete_one({"id": lid, "user_id": user.user_id})
+    await db.links.delete_one({"id": lid, **tenant_filter(user)})
     return {"ok": True}
 
 
 # ---------- Trade unions ----------
 @api_router.get("/trade-unions")
 async def list_trade_unions(user: User = Depends(get_current_user)):
-    return await db.trade_unions.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return await db.trade_unions.find(tenant_filter(user), {"_id": 0}).sort("created_at", -1).to_list(1000)
 
 
 @api_router.post("/trade-unions")
 async def create_trade_union(data: TradeUnionInput, user: User = Depends(get_current_user)):
-    tu = TradeUnion(**data.model_dump(), user_id=user.user_id)
+    tu = TradeUnion(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.trade_unions.insert_one(tu.model_dump())
     return tu.model_dump()
 
 
 @api_router.put("/trade-unions/{tid}")
 async def update_trade_union(tid: str, data: TradeUnionInput, user: User = Depends(get_current_user)):
-    res = await db.trade_unions.update_one({"id": tid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.trade_unions.update_one({"id": tid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Trade union not found")
     return {"ok": True}
@@ -1694,7 +2109,7 @@ async def update_trade_union(tid: str, data: TradeUnionInput, user: User = Depen
 
 @api_router.delete("/trade-unions/{tid}")
 async def delete_trade_union(tid: str, user: User = Depends(get_current_user)):
-    await db.trade_unions.delete_one({"id": tid, "user_id": user.user_id})
+    await db.trade_unions.delete_one({"id": tid, **tenant_filter(user)})
     return {"ok": True}
 
 
@@ -1720,12 +2135,12 @@ STARTER_LINKS = {
 @api_router.post("/links/seed")
 async def seed_links(user: User = Depends(get_current_user)):
     region = "IE" if user.region == "IE" else "UK"
-    existing = {l.get("url") for l in await db.links.find({"user_id": user.user_id}, {"_id": 0, "url": 1}).to_list(1000)}
+    existing = {l.get("url") for l in await db.links.find(tenant_filter(user), {"_id": 0, "url": 1}).to_list(1000)}
     added = 0
     for s in STARTER_LINKS[region]:
         if s["url"] in existing:
             continue
-        await db.links.insert_one(WebLink(**s, user_id=user.user_id).model_dump())
+        await db.links.insert_one(WebLink(**s, user_id=user.user_id, org_id=user.org_id).model_dump())
         added += 1
     return {"ok": True, "added": added, "region": region}
 
@@ -1753,7 +2168,7 @@ LETTER_GUIDES = {
 
 @api_router.post("/documents/draft")
 async def draft_document(data: LetterDraftInput, user: User = Depends(get_current_user)):
-    op = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    op = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     guide = LETTER_GUIDES.get(data.template, f"a formal '{data.template}' business letter")
     company = op.get("company_name") or "the company"
     try:
@@ -1785,7 +2200,7 @@ async def draft_document(data: LetterDraftInput, user: User = Depends(get_curren
 async def generate_document(data: LetterGenerateInput, user: User = Depends(get_current_user)):
     att = await _render_letter_attachment(user, data)
     doc = ComplianceDoc(
-        user_id=user.user_id,
+        user_id=user.user_id, org_id=user.org_id,
         title=data.title or f"{data.template} — {data.recipient_name}".strip(" —"),
         doc_type=data.template,
         reference=data.subject,
@@ -1799,15 +2214,15 @@ async def generate_document(data: LetterGenerateInput, user: User = Depends(get_
 
 @api_router.put("/documents/{docid}/regenerate")
 async def regenerate_document(docid: str, data: LetterGenerateInput, user: User = Depends(get_current_user)):
-    existing = await db.documents.find_one({"id": docid, "user_id": user.user_id}, {"_id": 0})
+    existing = await db.documents.find_one({"id": docid, **tenant_filter(user)}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Document not found")
     for old in (existing.get("attachments") or []):
         if old.get("file_id"):
-            await db.files.update_one({"id": old["file_id"], "user_id": user.user_id}, {"$set": {"is_deleted": True}})
+            await db.files.update_one({"id": old["file_id"], **tenant_filter(user)}, {"$set": {"is_deleted": True}})
     version = ((existing.get("letter_data") or {}).get("version", 1) or 1) + 1
     att = await _render_letter_attachment(user, data)
-    await db.documents.update_one({"id": docid, "user_id": user.user_id}, {"$set": {
+    await db.documents.update_one({"id": docid, **tenant_filter(user)}, {"$set": {
         "title": data.title or f"{data.template} — {data.recipient_name}".strip(" —"),
         "doc_type": data.template,
         "reference": data.subject,
@@ -1819,11 +2234,11 @@ async def regenerate_document(docid: str, data: LetterGenerateInput, user: User 
 
 
 async def _render_letter_attachment(user: User, data: LetterGenerateInput) -> Attachment:
-    op = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    op = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     signoff_name = data.signoff_name or op.get("tm_name") or ""
     signoff_role = data.signoff_role or ("Transport Manager" if op.get("tm_name") else "")
     date_str = datetime.now(timezone.utc).strftime("%d %B %Y")
-    logo_bytes = await _get_logo_bytes(user.user_id, op)
+    logo_bytes = await _get_logo_bytes(user.org_id, op)
     try:
         pdf_bytes = await asyncio.to_thread(
             build_letter_pdf, op, data.recipient_name, data.recipient_address, data.subject, data.body,
@@ -1841,7 +2256,7 @@ async def _render_letter_attachment(user: User, data: LetterGenerateInput) -> At
         logging.error(f"Letter upload failed: {e}")
         raise HTTPException(status_code=502, detail="Upload failed")
     await db.files.insert_one({
-        "id": file_id, "user_id": user.user_id, "storage_path": result["path"],
+        "id": file_id, "user_id": user.user_id, "org_id": user.org_id, "storage_path": result["path"],
         "original_filename": fname, "content_type": "application/pdf",
         "size": result.get("size", len(pdf_bytes)), "is_deleted": False, "created_at": now_iso(),
     })
@@ -1885,13 +2300,13 @@ def _enrich_fuel(records: list) -> list:
 
 @api_router.get("/fuel")
 async def list_fuel(user: User = Depends(get_current_user)):
-    recs = await db.fuel.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
+    recs = await db.fuel.find(tenant_filter(user), {"_id": 0}).to_list(5000)
     return _enrich_fuel(recs)
 
 
 @api_router.get("/fuel/summary")
 async def fuel_summary(user: User = Depends(get_current_user)):
-    recs = _enrich_fuel(await db.fuel.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000))
+    recs = _enrich_fuel(await db.fuel.find(tenant_filter(user), {"_id": 0}).to_list(5000))
     per_vehicle = {}
     for r in recs:
         reg = r.get("vehicle_reg")
@@ -1948,7 +2363,7 @@ async def fuel_report(
     vehicle_reg: Optional[str] = Query(None),
     user: User = Depends(get_current_user),
 ):
-    recs = _enrich_fuel(await db.fuel.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000))
+    recs = _enrich_fuel(await db.fuel.find(tenant_filter(user), {"_id": 0}).to_list(5000))
     if vehicle_reg:
         recs = [r for r in recs if r.get("vehicle_reg") == vehicle_reg]
     if from_date:
@@ -2023,17 +2438,17 @@ async def fuel_report(
         {"heading": "AdBlue fills", "columns": ["Date", "Vehicle", "Litres", "Cost"], "rows": adblue_rows},
     ]
     period = f"{from_date or 'start'} → {to_date or 'today'}"
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     authority = "RSA (Ireland)" if user.region == "IE" else "DVSA (UK)"
     pdf = await asyncio.to_thread(
         build_report_pdf, "Fuel & AdBlue Usage Report", period,
         [("Operator", operator.get("company_name", "")), ("Vehicle", vehicle_reg or "All vehicles")],
-        sections, await _get_logo_bytes(user.user_id, operator), authority)
+        sections, await _get_logo_bytes(user.org_id, operator), authority)
     fname = f"fuel-report-{(from_date or 'all')}-to-{(to_date or 'now')}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
-async def _report_data(user_id, kinds, from_date=None, to_date=None):
+async def _report_data(org_id, kinds, from_date=None, to_date=None):
     """Fetch + status-enrich the collections needed for reports.
 
     from_date/to_date (YYYY-MM-DD) filter time-series records (defects, service,
@@ -2059,48 +2474,48 @@ async def _report_data(user_id, kinds, from_date=None, to_date=None):
 
     out = {}
     if "vehicles" in kinds:
-        vs = await db.vehicles.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        vs = await db.vehicles.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         for d in vs:
             d["mot_status"] = compliance_status(days_until(d.get("mot_due")))
         out["vehicles"] = vs
     if "trailers" in kinds:
-        ts = await db.trailers.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        ts = await db.trailers.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         for d in ts:
             d["mot_status"] = compliance_status(days_until(d.get("mot_due")))
         out["trailers"] = ts
     if "drivers" in kinds:
-        ds = await db.drivers.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        ds = await db.drivers.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         for d in ds:
             d["licence_status"] = compliance_status(days_until(d.get("licence_expiry")))
         out["drivers"] = ds
     if "defects" in kinds:
-        dfx = await db.defects.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        dfx = await db.defects.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         out["defects"] = [d for d in dfx if in_range(d, "defect_date", "created_at")]
     if "service" in kinds:
-        sv = await db.service_records.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        sv = await db.service_records.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         for d in sv:
             d["status"] = compliance_status(days_until(d.get("next_service_due")))
         out["service"] = [d for d in sv if in_range(d, "service_date")]
     if "wheel" in kinds:
-        ws = await db.wheel_audits.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        ws = await db.wheel_audits.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         for d in ws:
             d["status"] = compliance_status(days_until(d.get("next_due")))
         out["wheel"] = [d for d in ws if in_range(d, "audit_date")]
     if "walkaround" in kinds:
-        wk = await db.walkaround_checks.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        wk = await db.walkaround_checks.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         out["walkaround"] = [d for d in wk if in_range(d, "check_date")]
     if "weekly_walkaround" in kinds:
-        ww = await db.weekly_walkarounds.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        ww = await db.weekly_walkarounds.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         out["weekly_walkaround"] = [d for d in ww if in_range(d, "week_start")]
     if "tacho" in kinds:
-        tn = await db.tacho_analyses.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        tn = await db.tacho_analyses.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         out["tacho"] = [d for d in tn if in_range(d, "created_at")]
     if "pmi" in kinds:
-        ps = await db.pmi_schedules.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        ps = await db.pmi_schedules.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
         for d in ps:
             d["status"] = compliance_status(days_until(d.get("next_due")))
         out["pmi"] = ps
-        pr = await db.pmi_records.find({"user_id": user_id}, {"_id": 0}).to_list(5000)
+        pr = await db.pmi_records.find({"org_id": org_id}, {"_id": 0}).to_list(5000)
         out["pmi_records"] = [d for d in pr if in_range(d, "inspection_date")]
     return out
 
@@ -2146,11 +2561,11 @@ async def download_report(kind: str, include_files: bool = Query(False), format:
     if not spec:
         raise HTTPException(status_code=404, detail="Unknown report type")
     kinds, builder = spec
-    data = await _report_data(user.user_id, kinds, from_date, to_date)
+    data = await _report_data(user.org_id, kinds, from_date, to_date)
     title, subtitle, sections = builder(data, user.region)
     if from_date or to_date:
         subtitle = f"{subtitle} · Period {from_date or 'start'} to {to_date or 'now'}"
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     authority = "RSA (Ireland)" if user.region == "IE" else "DVSA (UK)"
     if format == "json":
         return {
@@ -2163,9 +2578,9 @@ async def download_report(kind: str, include_files: bool = Query(False), format:
     pdf = await asyncio.to_thread(
         build_report_pdf, title, subtitle,
         [("Operator", operator.get("company_name", ""))], sections,
-        await _get_logo_bytes(user.user_id, operator), authority)
+        await _get_logo_bytes(user.org_id, operator), authority)
     if include_files:
-        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.user_id, _report_file_ids(kind, data)))
+        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.org_id, _report_file_ids(kind, data)))
     suffix = "-pack" if include_files else ""
     fname = f"{kind}-report{suffix}-{datetime.now(timezone.utc).date().isoformat()}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
@@ -2173,14 +2588,14 @@ async def download_report(kind: str, include_files: bool = Query(False), format:
 
 @api_router.post("/fuel")
 async def create_fuel(data: FuelInput, user: User = Depends(get_current_user)):
-    r = FuelRecord(**data.model_dump(), user_id=user.user_id)
+    r = FuelRecord(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.fuel.insert_one(r.model_dump())
     return r.model_dump()
 
 
 @api_router.put("/fuel/{fid}")
 async def update_fuel(fid: str, data: FuelInput, user: User = Depends(get_current_user)):
-    res = await db.fuel.update_one({"id": fid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.fuel.update_one({"id": fid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Fuel record not found")
     return {"ok": True}
@@ -2188,14 +2603,14 @@ async def update_fuel(fid: str, data: FuelInput, user: User = Depends(get_curren
 
 @api_router.delete("/fuel/{fid}")
 async def delete_fuel(fid: str, user: User = Depends(get_current_user)):
-    await db.fuel.delete_one({"id": fid, "user_id": user.user_id})
+    await db.fuel.delete_one({"id": fid, **tenant_filter(user)})
     return {"ok": True}
 
 
 # ---------- Insurance ----------
 @api_router.get("/insurance")
 async def list_insurance(user: User = Depends(get_current_user)):
-    docs = await db.insurance.find({"user_id": user.user_id}, {"_id": 0}).sort("expiry_date", 1).to_list(1000)
+    docs = await db.insurance.find(tenant_filter(user), {"_id": 0}).sort("expiry_date", 1).to_list(1000)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("expiry_date")))
         d["days_left"] = days_until(d.get("expiry_date"))
@@ -2204,14 +2619,14 @@ async def list_insurance(user: User = Depends(get_current_user)):
 
 @api_router.post("/insurance")
 async def create_insurance(data: InsuranceInput, user: User = Depends(get_current_user)):
-    p = InsurancePolicy(**data.model_dump(), user_id=user.user_id)
+    p = InsurancePolicy(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.insurance.insert_one(p.model_dump())
     return p.model_dump()
 
 
 @api_router.put("/insurance/{iid}")
 async def update_insurance(iid: str, data: InsuranceInput, user: User = Depends(get_current_user)):
-    res = await db.insurance.update_one({"id": iid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.insurance.update_one({"id": iid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Insurance policy not found")
     return {"ok": True}
@@ -2219,7 +2634,7 @@ async def update_insurance(iid: str, data: InsuranceInput, user: User = Depends(
 
 @api_router.delete("/insurance/{iid}")
 async def delete_insurance(iid: str, user: User = Depends(get_current_user)):
-    await db.insurance.delete_one({"id": iid, "user_id": user.user_id})
+    await db.insurance.delete_one({"id": iid, **tenant_filter(user)})
     return {"ok": True}
 
 
@@ -2341,7 +2756,7 @@ async def ai_import_insurance(files: List[UploadFile] = File(...), user: User = 
             logging.error(f"AI import upload failed: {e}")
             continue
         await db.files.insert_one({
-            "id": file_id, "user_id": user.user_id, "storage_path": result["path"],
+            "id": file_id, "user_id": user.user_id, "org_id": user.org_id, "storage_path": result["path"],
             "original_filename": file.filename, "content_type": content_type,
             "size": result.get("size", len(data)), "is_deleted": False, "created_at": now_iso(),
         })
@@ -2358,7 +2773,10 @@ async def ai_import_insurance(files: List[UploadFile] = File(...), user: User = 
                 notes="Combined liability policy (covers Public & Employers' Liability).", ai_extracted=True,
             )
             for ptype in ["Public Liability (PL)", "Employers' Liability (EL)"]:
-                key = {"user_id": user.user_id, "policy_type": ptype}
+                # Dedupe against the organisation's policies, not the importing
+                # user's, so two colleagues importing the same certificate do
+                # not create duplicate policies.
+                key = {**tenant_filter(user), "policy_type": ptype}
                 key["policy_number"] = num if num else ""
                 if not num:
                     key["insurer"] = ins
@@ -2366,10 +2784,10 @@ async def ai_import_insurance(files: List[UploadFile] = File(...), user: User = 
                 if existing:
                     fids = {a.get("file_id") for a in (existing.get("attachments") or [])}
                     if attachment.file_id not in fids:
-                        await db.insurance.update_one({"id": existing["id"], "user_id": user.user_id}, {"$push": {"attachments": attachment.model_dump()}})
+                        await db.insurance.update_one({"id": existing["id"], **tenant_filter(user)}, {"$push": {"attachments": attachment.model_dump()}})
                     rid = existing["id"]
                 else:
-                    pol = InsurancePolicy(user_id=user.user_id, policy_type=ptype, attachments=[attachment], **common)
+                    pol = InsurancePolicy(user_id=user.user_id, org_id=user.org_id, policy_type=ptype, attachments=[attachment], **common)
                     await db.insurance.insert_one(pol.model_dump())
                     rid = pol.id
                 created.append({"id": rid, "filename": file.filename, "policy_type": ptype,
@@ -2379,7 +2797,7 @@ async def ai_import_insurance(files: List[UploadFile] = File(...), user: User = 
             ptype = classify_policy_type(extracted.get("policy_type"), file.filename or "", extracted.get("policy_number") or "", extracted.get("insurer") or "")
             conf = extracted.get("confidence", 0) or 0
             policy = InsurancePolicy(
-                user_id=user.user_id, policy_type=ptype,
+                user_id=user.user_id, org_id=user.org_id, policy_type=ptype,
                 insurer=extracted.get("insurer") or "", policy_number=extracted.get("policy_number") or "",
                 start_date=extracted.get("start_date") or None, expiry_date=extracted.get("expiry_date") or None,
                 cover_amount=str(extracted.get("cover_amount") or ""),
@@ -2388,7 +2806,7 @@ async def ai_import_insurance(files: List[UploadFile] = File(...), user: User = 
             )
         else:
             policy = InsurancePolicy(
-                user_id=user.user_id, policy_type=infer_from_text(file.filename or ""), needs_review=True, ai_extracted=True,
+                user_id=user.user_id, org_id=user.org_id, policy_type=infer_from_text(file.filename or ""), needs_review=True, ai_extracted=True,
                 attachments=[attachment], notes="AI could not read this document — please review manually.",
             )
         await db.insurance.insert_one(policy.model_dump())
@@ -2399,7 +2817,7 @@ async def ai_import_insurance(files: List[UploadFile] = File(...), user: User = 
 
 @api_router.post("/insurance/reclassify")
 async def reclassify_insurance(user: User = Depends(get_current_user)):
-    docs = await db.insurance.find({"user_id": user.user_id, "policy_type": "Other"}, {"_id": 0}).to_list(1000)
+    docs = await db.insurance.find({**tenant_filter(user), "policy_type": "Other"}, {"_id": 0}).to_list(1000)
     moved = 0
     for d in docs:
         atts = d.get("attachments") or []
@@ -2407,7 +2825,7 @@ async def reclassify_insurance(user: User = Depends(get_current_user)):
         new_type = "Other"
         # 1) Re-read the actual document content with AI (most accurate, distinguishes PL vs EL)
         if atts and atts[0].get("file_id"):
-            frec = await db.files.find_one({"id": atts[0]["file_id"], "user_id": user.user_id, "is_deleted": False}, {"_id": 0})
+            frec = await db.files.find_one({"id": atts[0]["file_id"], **tenant_filter(user), "is_deleted": False}, {"_id": 0})
             if frec:
                 try:
                     content, ctype = await asyncio.to_thread(get_object, frec["storage_path"])
@@ -2425,7 +2843,7 @@ async def reclassify_insurance(user: User = Depends(get_current_user)):
         if new_type == "Other":
             new_type = infer_from_text(f"{fn} {d.get('policy_number', '')} {d.get('insurer', '')}")
         if new_type != "Other":
-            await db.insurance.update_one({"id": d["id"], "user_id": user.user_id}, {"$set": {"policy_type": new_type}})
+            await db.insurance.update_one({"id": d["id"], **tenant_filter(user)}, {"$set": {"policy_type": new_type}})
             moved += 1
     return {"ok": True, "moved": moved, "checked": len(docs)}
 
@@ -2441,7 +2859,7 @@ def compute_next_due(last: Optional[str], days: int) -> Optional[str]:
 
 @api_router.get("/tacho")
 async def list_tacho(user: User = Depends(get_current_user)):
-    docs = await db.tacho.find({"user_id": user.user_id}, {"_id": 0}).sort("next_due", 1).to_list(1000)
+    docs = await db.tacho.find(tenant_filter(user), {"_id": 0}).sort("next_due", 1).to_list(1000)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("next_due")), soon_days=TACHO_SOON_DAYS)
         d["days_left"] = days_until(d.get("next_due"))
@@ -2451,7 +2869,7 @@ async def list_tacho(user: User = Depends(get_current_user)):
 @api_router.post("/tacho")
 async def create_tacho(data: TachoInput, user: User = Depends(get_current_user)):
     payload = data.model_dump()
-    t = TachoRecord(**payload, user_id=user.user_id)
+    t = TachoRecord(**payload, user_id=user.user_id, org_id=user.org_id)
     t.next_due = compute_next_due(t.last_download, t.frequency_days)
     await db.tacho.insert_one(t.model_dump())
     return t.model_dump()
@@ -2461,7 +2879,7 @@ async def create_tacho(data: TachoInput, user: User = Depends(get_current_user))
 async def update_tacho(tid: str, data: TachoInput, user: User = Depends(get_current_user)):
     payload = data.model_dump()
     payload["next_due"] = compute_next_due(payload.get("last_download"), payload.get("frequency_days", 28))
-    res = await db.tacho.update_one({"id": tid, "user_id": user.user_id}, {"$set": payload})
+    res = await db.tacho.update_one({"id": tid, **tenant_filter(user)}, {"$set": payload})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Tacho record not found")
     return {"ok": True, "next_due": payload["next_due"]}
@@ -2469,7 +2887,7 @@ async def update_tacho(tid: str, data: TachoInput, user: User = Depends(get_curr
 
 @api_router.post("/tacho/{tid}/download")
 async def log_tacho_download(tid: str, payload: dict, user: User = Depends(get_current_user)):
-    rec = await db.tacho.find_one({"id": tid, "user_id": user.user_id}, {"_id": 0})
+    rec = await db.tacho.find_one({"id": tid, **tenant_filter(user)}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Tacho record not found")
     dl_date = payload.get("download_date") or now_iso()[:10]
@@ -2483,7 +2901,7 @@ async def log_tacho_download(tid: str, payload: dict, user: User = Depends(get_c
 
 @api_router.delete("/tacho/{tid}")
 async def delete_tacho(tid: str, user: User = Depends(get_current_user)):
-    await db.tacho.delete_one({"id": tid, "user_id": user.user_id})
+    await db.tacho.delete_one({"id": tid, **tenant_filter(user)})
     return {"ok": True}
 
 
@@ -2544,7 +2962,7 @@ async def ai_extract_tacho(file_bytes: bytes, mime: str, ext: str):
 
 @api_router.post("/tacho/parse")
 async def parse_tacho(payload: TachoParseInput, user: User = Depends(get_current_user)):
-    rec = await db.files.find_one({"id": payload.file_id, "user_id": user.user_id, "is_deleted": False}, {"_id": 0})
+    rec = await db.files.find_one({"id": payload.file_id, **tenant_filter(user), "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
     data, ct = get_object(rec["storage_path"])
@@ -2613,7 +3031,7 @@ async def ai_analyse_tacho(file_bytes: bytes, mime: str, ext: str, region: str, 
 
 @api_router.post("/tacho/analyse")
 async def analyse_tacho(payload: TachoAnalyseInput, user: User = Depends(get_current_user)):
-    rec = await db.files.find_one({"id": payload.file_id, "user_id": user.user_id, "is_deleted": False}, {"_id": 0})
+    rec = await db.files.find_one({"id": payload.file_id, **tenant_filter(user), "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
     data, ct = get_object(rec["storage_path"])
@@ -2622,7 +3040,7 @@ async def analyse_tacho(payload: TachoAnalyseInput, user: User = Depends(get_cur
     result = await run_tacho_analysis(data, ct, ext, user.region, payload.driver_name) or {}
     infr = result.get("infringements") or []
     analysis = TachoAnalysis(
-        user_id=user.user_id, driver_name=payload.driver_name or result.get("driver_name") or "",
+        user_id=user.user_id, org_id=user.org_id, driver_name=payload.driver_name or result.get("driver_name") or "",
         period=result.get("period") or "", summary=result.get("summary") or "",
         total_infringements=result.get("total_infringements") if isinstance(result.get("total_infringements"), int) else len(infr),
         infringements=infr, confidence=float(result.get("confidence") or 0), file_id=payload.file_id,
@@ -2633,13 +3051,13 @@ async def analyse_tacho(payload: TachoAnalyseInput, user: User = Depends(get_cur
 
 @api_router.get("/tacho/analyses")
 async def list_tacho_analyses(user: User = Depends(get_current_user)):
-    return await db.tacho_analyses.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return await db.tacho_analyses.find(tenant_filter(user), {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
 @api_router.get("/tacho/driver-summary")
 async def tacho_driver_summary(user: User = Depends(get_current_user)):
     """Per-driver infringement rollup across all tacho analyses (repeat-offender view)."""
-    analyses = await db.tacho_analyses.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    analyses = await db.tacho_analyses.find(tenant_filter(user), {"_id": 0}).to_list(2000)
     by = {}
     for a in analyses:
         name = a.get("driver_name") or "Unassigned"
@@ -2670,8 +3088,8 @@ async def tacho_driver_summary(user: User = Depends(get_current_user)):
     return {"drivers": rows, "totals": totals}
 
 
-async def _driver_analyses(user_id: str, name: str):
-    q = {"user_id": user_id}
+async def _driver_analyses(org_id: str, name: str):
+    q = {"org_id": org_id}
     if name and name != "Unassigned":
         q["driver_name"] = name
     else:
@@ -2681,7 +3099,7 @@ async def _driver_analyses(user_id: str, name: str):
 
 @api_router.get("/tacho/driver-detail")
 async def tacho_driver_detail(name: str, user: User = Depends(get_current_user)):
-    analyses = await _driver_analyses(user.user_id, name)
+    analyses = await _driver_analyses(user.org_id, name)
     infr = []
     for a in analyses:
         for i in (a.get("infringements") or []):
@@ -2707,7 +3125,7 @@ async def tacho_driver_detail(name: str, user: User = Depends(get_current_user))
 @api_router.get("/tacho/driver-letter")
 async def tacho_driver_letter(name: str, signoff_name: str = "", signoff_role: str = "Transport Manager",
                               user: User = Depends(get_current_user)):
-    analyses = await _driver_analyses(user.user_id, name)
+    analyses = await _driver_analyses(user.org_id, name)
     infr = []
     for a in analyses:
         for i in (a.get("infringements") or []):
@@ -2715,7 +3133,7 @@ async def tacho_driver_letter(name: str, signoff_name: str = "", signoff_role: s
     if not infr:
         raise HTTPException(status_code=400, detail="No infringements recorded for this driver")
     infr.sort(key=lambda x: (x.get("datetime") or ""))
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     is_ie = (user.region or "UK").upper() in ("IE", "IRELAND", "RSA")
     authority = "RSA (Ireland)" if is_ie else "DVSA (UK)"
     dates = [i.get("datetime", "")[:10] for i in infr if i.get("datetime")]
@@ -2751,20 +3169,20 @@ async def tacho_driver_letter(name: str, signoff_name: str = "", signoff_role: s
     pdf = await asyncio.to_thread(
         build_letter_pdf, operator, name, "", "Driver's Hours Infringement Notification", body, gen,
         "Infringement Letter", signoff_name or (operator.get("contact_name") or ""), signoff_role,
-        await _get_logo_bytes(user.user_id, operator))
+        await _get_logo_bytes(user.org_id, operator))
     fname = f"infringement-letter-{(name or 'driver').replace(' ', '_')}-{datetime.now(timezone.utc).date().isoformat()}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @api_router.delete("/tacho/analyses/{aid}")
 async def delete_tacho_analysis(aid: str, user: User = Depends(get_current_user)):
-    await db.tacho_analyses.delete_one({"id": aid, "user_id": user.user_id})
+    await db.tacho_analyses.delete_one({"id": aid, **tenant_filter(user)})
     return {"ok": True}
 
 
 @api_router.get("/tacho/analyses/{aid}/report")
 async def tacho_analysis_report(aid: str, user: User = Depends(get_current_user)):
-    a = await db.tacho_analyses.find_one({"id": aid, "user_id": user.user_id}, {"_id": 0})
+    a = await db.tacho_analyses.find_one({"id": aid, **tenant_filter(user)}, {"_id": 0})
     if not a:
         raise HTTPException(status_code=404, detail="Analysis not found")
     rows = [{"cells": [i.get("datetime") or "—", i.get("type") or "—", i.get("rule") or "—",
@@ -2780,12 +3198,12 @@ async def tacho_analysis_report(aid: str, user: User = Depends(get_current_user)
         ]},
         {"heading": "Infringements", "columns": ["When", "Type", "Rule", "Severity", "Detail", "Action"], "rows": rows},
     ]
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     authority = "RSA (Ireland)" if user.region == "IE" else "DVSA (UK)"
     pdf = await asyncio.to_thread(
         build_report_pdf, "Tachograph Analysis", a.get("driver_name") or "",
         [("Operator", operator.get("company_name", ""))], sections,
-        await _get_logo_bytes(user.user_id, operator), authority)
+        await _get_logo_bytes(user.org_id, operator), authority)
     fname = f"tacho-analysis-{(a.get('driver_name') or 'driver').replace(' ', '_')}-{datetime.now(timezone.utc).date().isoformat()}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
@@ -2809,13 +3227,13 @@ async def summarise_defect(description: str, severity: str) -> str:
 
 @api_router.get("/defects")
 async def list_defects(user: User = Depends(get_current_user)):
-    docs = await db.defects.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    docs = await db.defects.find(tenant_filter(user), {"_id": 0}).sort("created_at", -1).to_list(1000)
     return docs
 
 
 @api_router.post("/defects")
 async def create_defect(data: DefectInput, user: User = Depends(get_current_user)):
-    d = DefectReport(**data.model_dump(), user_id=user.user_id)
+    d = DefectReport(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     d.ai_summary = await summarise_defect(data.description, data.severity)
     await db.defects.insert_one(d.model_dump())
     return d.model_dump()
@@ -2823,7 +3241,7 @@ async def create_defect(data: DefectInput, user: User = Depends(get_current_user
 
 @api_router.put("/defects/{did}/status")
 async def update_defect_status(did: str, status: str, user: User = Depends(get_current_user)):
-    res = await db.defects.update_one({"id": did, "user_id": user.user_id}, {"$set": {"status": status}})
+    res = await db.defects.update_one({"id": did, **tenant_filter(user)}, {"$set": {"status": status}})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Defect not found")
     return {"ok": True}
@@ -2833,7 +3251,7 @@ async def update_defect_status(did: str, status: str, user: User = Depends(get_c
 async def rectify_defect(did: str, data: DefectRectifyInput, user: User = Depends(get_current_user)):
     upd = {"status": "rectified", "rectified_date": data.rectified_date or now_iso()[:10],
            "rectified_by": data.rectified_by, "rectification_notes": data.rectification_notes}
-    res = await db.defects.update_one({"id": did, "user_id": user.user_id}, {"$set": upd})
+    res = await db.defects.update_one({"id": did, **tenant_filter(user)}, {"$set": upd})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Defect not found")
     return {"ok": True}
@@ -2841,7 +3259,7 @@ async def rectify_defect(did: str, data: DefectRectifyInput, user: User = Depend
 
 @api_router.delete("/defects/{did}")
 async def delete_defect(did: str, user: User = Depends(get_current_user)):
-    await db.defects.delete_one({"id": did, "user_id": user.user_id})
+    await db.defects.delete_one({"id": did, **tenant_filter(user)})
     return {"ok": True}
 
 
@@ -2855,7 +3273,7 @@ def advance_due(inspection_date: str, weeks: int):
 
 @api_router.get("/pmi")
 async def list_pmi(user: User = Depends(get_current_user)):
-    docs = await db.pmi_schedules.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
+    docs = await db.pmi_schedules.find(tenant_filter(user), {"_id": 0}).to_list(1000)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("next_due")))
         d["days_left"] = days_until(d.get("next_due"))
@@ -2868,14 +3286,14 @@ async def create_pmi(data: PMIInput, user: User = Depends(get_current_user)):
     payload = data.model_dump()
     if not payload.get("next_due"):
         payload["next_due"] = advance_due(now_iso(), payload.get("frequency_weeks", 6))
-    p = PMISchedule(**payload, user_id=user.user_id)
+    p = PMISchedule(**payload, user_id=user.user_id, org_id=user.org_id)
     await db.pmi_schedules.insert_one(p.model_dump())
     return p.model_dump()
 
 
 @api_router.put("/pmi/{pid}")
 async def update_pmi(pid: str, data: PMIInput, user: User = Depends(get_current_user)):
-    res = await db.pmi_schedules.update_one({"id": pid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.pmi_schedules.update_one({"id": pid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="PMI schedule not found")
     return {"ok": True}
@@ -2883,18 +3301,18 @@ async def update_pmi(pid: str, data: PMIInput, user: User = Depends(get_current_
 
 @api_router.delete("/pmi/{pid}")
 async def delete_pmi(pid: str, user: User = Depends(get_current_user)):
-    await db.pmi_schedules.delete_one({"id": pid, "user_id": user.user_id})
+    await db.pmi_schedules.delete_one({"id": pid, **tenant_filter(user)})
     return {"ok": True}
 
 
 @api_router.post("/pmi/{pid}/complete")
 async def complete_pmi(pid: str, data: PMICompleteInput, user: User = Depends(get_current_user)):
-    sched = await db.pmi_schedules.find_one({"id": pid, "user_id": user.user_id}, {"_id": 0})
+    sched = await db.pmi_schedules.find_one({"id": pid, **tenant_filter(user)}, {"_id": 0})
     if not sched:
         raise HTTPException(status_code=404, detail="PMI schedule not found")
     record = {
         "id": f"pmr_{uuid.uuid4().hex[:10]}",
-        "user_id": user.user_id,
+        "user_id": user.user_id, "org_id": user.org_id,
         "pmi_id": pid,
         "vehicle_reg": sched["vehicle_reg"],
         "inspection_date": data.inspection_date,
@@ -2922,7 +3340,7 @@ async def complete_pmi(pid: str, data: PMICompleteInput, user: User = Depends(ge
     record.pop("_id", None)
     if data.result == "fail":
         failed = [c.get("item") for c in (data.checklist or []) if not c.get("ok")]
-        await create_alert(user.user_id, "pmi_fail", "safety_critical",
+        await create_alert(user.org_id, "pmi_fail", "safety_critical",
                            f"PMI FAILED — {sched['vehicle_reg']}",
                            (", ".join(failed) if failed else (data.notes or "PMI inspection failed")),
                            vehicle_reg=sched["vehicle_reg"], driver_name=data.inspector, link="/maintenance")
@@ -2936,7 +3354,7 @@ async def interim_pmi(data: PMIInterimInput, user: User = Depends(get_current_us
         raise HTTPException(status_code=400, detail="Vehicle is required")
     record = {
         "id": f"pmr_{uuid.uuid4().hex[:10]}",
-        "user_id": user.user_id,
+        "user_id": user.user_id, "org_id": user.org_id,
         "pmi_id": None,
         "vehicle_reg": data.vehicle_reg,
         "inspection_date": data.inspection_date,
@@ -2962,7 +3380,7 @@ async def interim_pmi(data: PMIInterimInput, user: User = Depends(get_current_us
     record.pop("_id", None)
     if data.result == "fail":
         failed = [c.get("item") for c in (data.checklist or []) if not c.get("ok")]
-        await create_alert(user.user_id, "pmi_fail", "safety_critical",
+        await create_alert(user.org_id, "pmi_fail", "safety_critical",
                            f"Interim inspection FAILED — {data.vehicle_reg}",
                            (", ".join(failed) if failed else (data.notes or "Interim inspection failed")),
                            vehicle_reg=data.vehicle_reg, driver_name=data.inspector, link="/maintenance")
@@ -2971,19 +3389,19 @@ async def interim_pmi(data: PMIInterimInput, user: User = Depends(get_current_us
 
 @api_router.get("/pmi/records")
 async def list_pmi_records(user: User = Depends(get_current_user)):
-    docs = await db.pmi_records.find({"user_id": user.user_id}, {"_id": 0}).sort("inspection_date", -1).to_list(1000)
+    docs = await db.pmi_records.find(tenant_filter(user), {"_id": 0}).sort("inspection_date", -1).to_list(1000)
     return docs
 
 
 @api_router.delete("/pmi/records/{rid}")
 async def delete_pmi_record(rid: str, user: User = Depends(get_current_user)):
-    await db.pmi_records.delete_one({"id": rid, "user_id": user.user_id})
+    await db.pmi_records.delete_one({"id": rid, **tenant_filter(user)})
     return {"ok": True}
 
 
 @api_router.put("/pmi/records/{rid}")
 async def update_pmi_record(rid: str, data: PMICompleteInput, user: User = Depends(get_current_user)):
-    rec = await db.pmi_records.find_one({"id": rid, "user_id": user.user_id}, {"_id": 0})
+    rec = await db.pmi_records.find_one({"id": rid, **tenant_filter(user)}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Inspection record not found")
     upd = {
@@ -2995,35 +3413,35 @@ async def update_pmi_record(rid: str, data: PMICompleteInput, user: User = Depen
         "inspector_signature": data.inspector_signature, "rectifier_signature": data.rectifier_signature,
         "odometer": data.odometer, "make_model": data.make_model,
     }
-    await db.pmi_records.update_one({"id": rid, "user_id": user.user_id}, {"$set": upd})
+    await db.pmi_records.update_one({"id": rid, **tenant_filter(user)}, {"$set": upd})
     return {"ok": True, "record": {**rec, **upd}}
 
 
 @api_router.get("/pmi/records/{rid}/sheet")
 async def pmi_record_sheet(rid: str, include_files: bool = Query(False), user: User = Depends(get_current_user)):
-    rec = await db.pmi_records.find_one({"id": rid, "user_id": user.user_id}, {"_id": 0})
+    rec = await db.pmi_records.find_one({"id": rid, **tenant_filter(user)}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Inspection record not found")
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     pdf = await asyncio.to_thread(
         build_pmi_sheet_pdf, operator, rec, user.region,
-        await _get_logo_bytes(user.user_id, operator))
+        await _get_logo_bytes(user.org_id, operator))
     if include_files:
         fids = [a.get("file_id") for a in (rec.get("attachments") or [])]
-        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.user_id, fids))
+        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.org_id, fids))
     fname = f"inspection-sheet-{(rec.get('vehicle_reg') or 'vehicle').replace(' ', '_')}-{rec.get('inspection_date') or datetime.now(timezone.utc).date().isoformat()}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @api_router.get("/pmi/{pid}/report")
 async def pmi_history_report(pid: str, include_files: bool = Query(False), user: User = Depends(get_current_user)):
-    sched = await db.pmi_schedules.find_one({"id": pid, "user_id": user.user_id}, {"_id": 0})
+    sched = await db.pmi_schedules.find_one({"id": pid, **tenant_filter(user)}, {"_id": 0})
     if not sched:
         raise HTTPException(status_code=404, detail="PMI schedule not found")
-    recs = await db.pmi_records.find({"pmi_id": pid, "user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    recs = await db.pmi_records.find({"pmi_id": pid, **tenant_filter(user)}, {"_id": 0}).to_list(2000)
     recs.sort(key=lambda r: r.get("inspection_date") or "", reverse=True)
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
-    logo = await _get_logo_bytes(user.user_id, operator)
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
+    logo = await _get_logo_bytes(user.org_id, operator)
     if recs:
         sheets = [await asyncio.to_thread(build_pmi_sheet_pdf, operator, r, user.region, logo) for r in recs]
         pdf = await asyncio.to_thread(concat_pdfs, sheets)
@@ -3035,7 +3453,7 @@ async def pmi_history_report(pid: str, include_files: bool = Query(False), user:
             [("Operator", operator.get("company_name", ""))], sections, logo, authority)
     if include_files:
         fids = [a.get("file_id") for r in recs for a in (r.get("attachments") or [])]
-        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.user_id, fids))
+        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.org_id, fids))
     fname = f"pmi-history-{(sched.get('vehicle_reg') or 'vehicle').replace(' ', '_')}-{datetime.now(timezone.utc).date().isoformat()}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
@@ -3043,7 +3461,7 @@ async def pmi_history_report(pid: str, include_files: bool = Query(False), user:
 # ---------- Wheel Security Audits ----------
 @api_router.get("/wheel-audits")
 async def list_wheel_audits(user: User = Depends(get_current_user)):
-    docs = await db.wheel_audits.find({"user_id": user.user_id}, {"_id": 0}).sort("audit_date", -1).to_list(1000)
+    docs = await db.wheel_audits.find(tenant_filter(user), {"_id": 0}).sort("audit_date", -1).to_list(1000)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("next_due")))
         d["days_left"] = days_until(d.get("next_due"))
@@ -3052,14 +3470,14 @@ async def list_wheel_audits(user: User = Depends(get_current_user)):
 
 @api_router.post("/wheel-audits")
 async def create_wheel_audit(data: WheelAuditInput, user: User = Depends(get_current_user)):
-    w = WheelAudit(**data.model_dump(), user_id=user.user_id)
+    w = WheelAudit(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.wheel_audits.insert_one(w.model_dump())
     return w.model_dump()
 
 
 @api_router.put("/wheel-audits/{wid}")
 async def update_wheel_audit(wid: str, data: WheelAuditInput, user: User = Depends(get_current_user)):
-    res = await db.wheel_audits.update_one({"id": wid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.wheel_audits.update_one({"id": wid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Wheel security audit not found")
     return {"ok": True}
@@ -3067,14 +3485,14 @@ async def update_wheel_audit(wid: str, data: WheelAuditInput, user: User = Depen
 
 @api_router.delete("/wheel-audits/{wid}")
 async def delete_wheel_audit(wid: str, user: User = Depends(get_current_user)):
-    await db.wheel_audits.delete_one({"id": wid, "user_id": user.user_id})
+    await db.wheel_audits.delete_one({"id": wid, **tenant_filter(user)})
     return {"ok": True}
 
 
 # ---------- Service records ----------
 @api_router.get("/service-records")
 async def list_service(user: User = Depends(get_current_user)):
-    docs = await db.service_records.find({"user_id": user.user_id}, {"_id": 0}).sort("service_date", -1).to_list(1000)
+    docs = await db.service_records.find(tenant_filter(user), {"_id": 0}).sort("service_date", -1).to_list(1000)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("next_service_due")))
         d["days_left"] = days_until(d.get("next_service_due"))
@@ -3083,14 +3501,14 @@ async def list_service(user: User = Depends(get_current_user)):
 
 @api_router.post("/service-records")
 async def create_service(data: ServiceInput, user: User = Depends(get_current_user)):
-    s = ServiceRecord(**data.model_dump(), user_id=user.user_id)
+    s = ServiceRecord(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.service_records.insert_one(s.model_dump())
     return s.model_dump()
 
 
 @api_router.put("/service-records/{sid}")
 async def update_service(sid: str, data: ServiceInput, user: User = Depends(get_current_user)):
-    res = await db.service_records.update_one({"id": sid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.service_records.update_one({"id": sid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Service record not found")
     return {"ok": True}
@@ -3098,26 +3516,26 @@ async def update_service(sid: str, data: ServiceInput, user: User = Depends(get_
 
 @api_router.delete("/service-records/{sid}")
 async def delete_service(sid: str, user: User = Depends(get_current_user)):
-    await db.service_records.delete_one({"id": sid, "user_id": user.user_id})
+    await db.service_records.delete_one({"id": sid, **tenant_filter(user)})
     return {"ok": True}
 
 
 # ---------- Daily Walkaround Checks ----------
 @api_router.get("/walkarounds")
 async def list_walkarounds(user: User = Depends(get_current_user)):
-    return await db.walkaround_checks.find({"user_id": user.user_id}, {"_id": 0}).sort("check_date", -1).to_list(2000)
+    return await db.walkaround_checks.find(tenant_filter(user), {"_id": 0}).sort("check_date", -1).to_list(2000)
 
 
 @api_router.post("/walkarounds")
 async def create_walkaround(data: WalkaroundInput, user: User = Depends(get_current_user)):
-    w = WalkaroundCheck(**data.model_dump(), user_id=user.user_id)
+    w = WalkaroundCheck(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.walkaround_checks.insert_one(w.model_dump())
     return w.model_dump()
 
 
 @api_router.put("/walkarounds/{wid}")
 async def update_walkaround(wid: str, data: WalkaroundInput, user: User = Depends(get_current_user)):
-    res = await db.walkaround_checks.update_one({"id": wid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.walkaround_checks.update_one({"id": wid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Walkaround check not found")
     return {"ok": True}
@@ -3125,14 +3543,14 @@ async def update_walkaround(wid: str, data: WalkaroundInput, user: User = Depend
 
 @api_router.delete("/walkarounds/{wid}")
 async def delete_walkaround(wid: str, user: User = Depends(get_current_user)):
-    await db.walkaround_checks.delete_one({"id": wid, "user_id": user.user_id})
+    await db.walkaround_checks.delete_one({"id": wid, **tenant_filter(user)})
     return {"ok": True}
 
 
 @api_router.put("/walkarounds/{wid}/rectify")
 async def rectify_walkaround(wid: str, data: WalkaroundRectifyInput, user: User = Depends(get_current_user)):
     res = await db.walkaround_checks.update_one(
-        {"id": wid, "user_id": user.user_id},
+        {"id": wid, **tenant_filter(user)},
         {"$set": {"rectified": True, "rectified_date": data.rectified_date or now_iso()[:10], "rectified_notes": data.rectified_notes}},
     )
     if res.matched_count == 0:
@@ -3141,25 +3559,25 @@ async def rectify_walkaround(wid: str, data: WalkaroundRectifyInput, user: User 
 
 
 # ---------- Weekly Walkaround Checks ----------
-async def _get_or_create_weekly(user_id: str, vehicle_reg: str, week_start: str, driver_name: str = "") -> dict:
+async def _get_or_create_weekly(org_id: str, vehicle_reg: str, week_start: str, driver_name: str = "") -> dict:
     existing = await db.weekly_walkarounds.find_one(
-        {"user_id": user_id, "vehicle_reg": vehicle_reg, "week_start": week_start}, {"_id": 0})
+        {"org_id": org_id, "vehicle_reg": vehicle_reg, "week_start": week_start}, {"_id": 0})
     if existing:
         return existing
-    w = WeeklyWalkaround(user_id=user_id, vehicle_reg=vehicle_reg, week_start=week_start, driver_name=driver_name)
+    w = WeeklyWalkaround(org_id=org_id, vehicle_reg=vehicle_reg, week_start=week_start, driver_name=driver_name)
     await db.weekly_walkarounds.insert_one(w.model_dump())
     return w.model_dump()
 
 
 @api_router.get("/weekly-walkarounds")
 async def list_weekly_walkarounds(user: User = Depends(get_current_user)):
-    return await db.weekly_walkarounds.find({"user_id": user.user_id}, {"_id": 0}).sort("week_start", -1).to_list(2000)
+    return await db.weekly_walkarounds.find(tenant_filter(user), {"_id": 0}).sort("week_start", -1).to_list(2000)
 
 
 @api_router.post("/weekly-walkarounds")
 async def create_weekly_walkaround(data: WeeklyCreateInput, user: User = Depends(get_current_user)):
     ws = week_start_of(data.week_start)
-    rec = await _get_or_create_weekly(user.user_id, data.vehicle_reg, ws, data.driver_name)
+    rec = await _get_or_create_weekly(user.org_id, data.vehicle_reg, ws, data.driver_name)
     patch = {}
     if data.driver_name:
         patch["driver_name"] = data.driver_name
@@ -3169,7 +3587,7 @@ async def create_weekly_walkaround(data: WeeklyCreateInput, user: User = Depends
         patch["mileage_finish"] = data.mileage_finish
     if patch:
         patch["updated_at"] = now_iso()
-        await db.weekly_walkarounds.update_one({"id": rec["id"], "user_id": user.user_id}, {"$set": patch})
+        await db.weekly_walkarounds.update_one({"id": rec["id"], **tenant_filter(user)}, {"$set": patch})
         rec.update(patch)
     return rec
 
@@ -3178,7 +3596,7 @@ async def create_weekly_walkaround(data: WeeklyCreateInput, user: User = Depends
 async def update_weekly_walkaround(wid: str, data: WeeklyUpdateInput, user: User = Depends(get_current_user)):
     patch = {k: v for k, v in data.model_dump().items() if v is not None}
     patch["updated_at"] = now_iso()
-    res = await db.weekly_walkarounds.update_one({"id": wid, "user_id": user.user_id}, {"$set": patch})
+    res = await db.weekly_walkarounds.update_one({"id": wid, **tenant_filter(user)}, {"$set": patch})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Weekly walkaround not found")
     return {"ok": True}
@@ -3186,19 +3604,19 @@ async def update_weekly_walkaround(wid: str, data: WeeklyUpdateInput, user: User
 
 @api_router.delete("/weekly-walkarounds/{wid}")
 async def delete_weekly_walkaround(wid: str, user: User = Depends(get_current_user)):
-    await db.weekly_walkarounds.delete_one({"id": wid, "user_id": user.user_id})
+    await db.weekly_walkarounds.delete_one({"id": wid, **tenant_filter(user)})
     return {"ok": True}
 
 
 @api_router.get("/weekly-walkarounds/{wid}/sheet")
 async def weekly_walkaround_sheet(wid: str, user: User = Depends(get_current_user)):
-    rec = await db.weekly_walkarounds.find_one({"id": wid, "user_id": user.user_id}, {"_id": 0})
+    rec = await db.weekly_walkarounds.find_one({"id": wid, **tenant_filter(user)}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Weekly walkaround not found")
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     pdf = await asyncio.to_thread(
         build_weekly_walkaround_pdf, operator, rec, user.region,
-        await _get_logo_bytes(user.user_id, operator))
+        await _get_logo_bytes(user.org_id, operator))
     fname = f"weekly-walkaround-{(rec.get('vehicle_reg') or 'vehicle').replace(' ', '_')}-{rec.get('week_start')}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
@@ -3207,7 +3625,7 @@ async def weekly_walkaround_sheet(wid: str, user: User = Depends(get_current_use
 async def driver_get_weekly(driver: dict = Depends(get_current_driver)):
     reg = driver.get("assigned_vehicle_reg", "")
     ws = week_start_of(None)
-    return await _get_or_create_weekly(driver["user_id"], reg, ws, driver.get("name", ""))
+    return await _get_or_create_weekly(driver["org_id"], reg, ws, driver.get("name", ""))
 
 
 @api_router.post("/driver/weekly-walkaround/day")
@@ -3216,7 +3634,7 @@ async def driver_submit_weekly_day(data: WeeklyDayInput, driver: dict = Depends(
     today = datetime.now(timezone.utc).date()
     ws = week_start_of(None)
     dk = WEEK_DAYS[today.weekday()]
-    rec = await _get_or_create_weekly(driver["user_id"], reg, ws, driver.get("name", ""))
+    rec = await _get_or_create_weekly(driver["org_id"], reg, ws, driver.get("name", ""))
     days = rec.get("days") or {}
     failed = [c.get("item") for c in data.checklist if not c.get("ok", True)]
     days[dk] = {
@@ -3232,9 +3650,9 @@ async def driver_submit_weekly_day(data: WeeklyDayInput, driver: dict = Depends(
         patch["mileage_finish"] = data.mileage
     if data.signature and not rec.get("driver_signature"):
         patch["driver_signature"] = data.signature
-    await db.weekly_walkarounds.update_one({"id": rec["id"], "user_id": driver["user_id"]}, {"$set": patch})
+    await db.weekly_walkarounds.update_one({"id": rec["id"], "org_id": driver["org_id"]}, {"$set": patch})
     if failed:
-        await create_alert(driver["user_id"], "walkaround_defect", "major",
+        await create_alert(driver["org_id"], "walkaround_defect", "major",
                            f"Weekly walkaround defect — {reg}", ", ".join(failed),
                            vehicle_reg=reg, driver_name=driver.get("name", ""), link="/maintenance")
     rec.update(patch)
@@ -3244,19 +3662,19 @@ async def driver_submit_weekly_day(data: WeeklyDayInput, driver: dict = Depends(
 # ---------- Test History / Prohibitions ----------
 @api_router.get("/test-history")
 async def list_test_history(user: User = Depends(get_current_user)):
-    return await db.test_history.find({"user_id": user.user_id}, {"_id": 0}).sort("event_date", -1).to_list(2000)
+    return await db.test_history.find(tenant_filter(user), {"_id": 0}).sort("event_date", -1).to_list(2000)
 
 
 @api_router.post("/test-history")
 async def create_test_history(data: TestHistoryInput, user: User = Depends(get_current_user)):
-    t = TestHistory(**data.model_dump(), user_id=user.user_id)
+    t = TestHistory(**data.model_dump(), user_id=user.user_id, org_id=user.org_id)
     await db.test_history.insert_one(t.model_dump())
     return t.model_dump()
 
 
 @api_router.put("/test-history/{tid}")
 async def update_test_history(tid: str, data: TestHistoryInput, user: User = Depends(get_current_user)):
-    res = await db.test_history.update_one({"id": tid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    res = await db.test_history.update_one({"id": tid, **tenant_filter(user)}, {"$set": data.model_dump()})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Test history record not found")
     return {"ok": True}
@@ -3264,7 +3682,7 @@ async def update_test_history(tid: str, data: TestHistoryInput, user: User = Dep
 
 @api_router.delete("/test-history/{tid}")
 async def delete_test_history(tid: str, user: User = Depends(get_current_user)):
-    await db.test_history.delete_one({"id": tid, "user_id": user.user_id})
+    await db.test_history.delete_one({"id": tid, **tenant_filter(user)})
     return {"ok": True}
 
 
@@ -3272,7 +3690,7 @@ async def delete_test_history(tid: str, user: User = Depends(get_current_user)):
 @api_router.get("/calendar")
 async def calendar(user: User = Depends(get_current_user)):
     events = []
-    schedules = await db.pmi_schedules.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
+    schedules = await db.pmi_schedules.find(tenant_filter(user), {"_id": 0}).to_list(1000)
     horizon = (datetime.now(timezone.utc).date() + timedelta(weeks=52)).isoformat()
     for s in schedules:
         nd = s.get("next_due")
@@ -3301,13 +3719,13 @@ async def calendar(user: User = Depends(get_current_user)):
             })
             cur = cur + timedelta(weeks=fw)
             first, count = False, count + 1
-    records = await db.pmi_records.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    records = await db.pmi_records.find(tenant_filter(user), {"_id": 0}).to_list(2000)
     for r in records:
         events.append({
             "date": r["inspection_date"], "type": "pmi_done", "title": f"PMI Completed — {r['vehicle_reg']}",
             "subtitle": r.get("result", "pass").title(), "status": "expired" if r.get("result") == "fail" else "valid",
         })
-    defects = await db.defects.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    defects = await db.defects.find(tenant_filter(user), {"_id": 0}).to_list(2000)
     for d in defects:
         events.append({
             "date": d.get("defect_date") or (d.get("created_at") or "")[:10], "type": "defect", "title": f"Defect — {d['vehicle_reg']}",
@@ -3315,7 +3733,7 @@ async def calendar(user: User = Depends(get_current_user)):
             "status": "expired" if d.get("severity") in ("major", "safety_critical") else "due_soon",
         })
     events = [e for e in events if e.get("date")]
-    training = await db.training.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    training = await db.training.find(tenant_filter(user), {"_id": 0}).to_list(2000)
     for t in training:
         if t.get("completed_date"):
             events.append({
@@ -3329,7 +3747,7 @@ async def calendar(user: User = Depends(get_current_user)):
                 "subtitle": f"{t.get('category', '')} · {t.get('course_name', '')}".strip(" ·"),
                 "status": compliance_status(days_until(t["expiry_date"])),
             })
-    insurance = await db.insurance.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    insurance = await db.insurance.find(tenant_filter(user), {"_id": 0}).to_list(2000)
     for ins in insurance:
         if ins.get("expiry_date"):
             events.append({
@@ -3337,7 +3755,7 @@ async def calendar(user: User = Depends(get_current_user)):
                 "subtitle": ins.get("insurer") or ins.get("policy_number") or "",
                 "status": compliance_status(days_until(ins["expiry_date"])),
             })
-    tacho = await db.tacho.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    tacho = await db.tacho.find(tenant_filter(user), {"_id": 0}).to_list(2000)
     tacho_latest = {}
     for tc in tacho:
         key = (tc.get("source_type"), tc.get("reference"))
@@ -3357,12 +3775,12 @@ async def calendar(user: User = Depends(get_current_user)):
                 "date": tc["last_download"], "type": "tacho", "title": f"Tacho Downloaded — {tc.get('reference') or tc.get('source_type')}",
                 "subtitle": tc.get("source_type", ""), "status": "valid",
             })
-    for ev in await db.calendar_events.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000):
+    for ev in await db.calendar_events.find(tenant_filter(user), {"_id": 0}).to_list(2000):
         events.append({
             "id": ev.get("id"), "date": ev.get("date"), "type": "custom", "title": ev.get("title", "Event"),
             "subtitle": ev.get("notes", ""), "status": ev.get("status", "valid"),
         })
-    for w in await db.wheel_audits.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000):
+    for w in await db.wheel_audits.find(tenant_filter(user), {"_id": 0}).to_list(2000):
         if w.get("audit_date"):
             events.append({
                 "date": w["audit_date"], "type": "wheel", "title": f"Wheel Audit — {w.get('vehicle_reg')}",
@@ -3375,14 +3793,14 @@ async def calendar(user: User = Depends(get_current_user)):
                 "subtitle": w.get("torque_setting") or "Re-torque check",
                 "status": compliance_status(days_until(w["next_due"])),
             })
-    for wa in await db.walkaround_checks.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000):
+    for wa in await db.walkaround_checks.find(tenant_filter(user), {"_id": 0}).to_list(2000):
         if wa.get("check_date"):
             events.append({
                 "date": wa["check_date"], "type": "walkaround", "title": f"Daily Check — {wa.get('vehicle_reg')}",
                 "subtitle": ("Defects found" if wa.get("result") == "defects_found" else "Nil defect") + (f" · {wa.get('driver_name')}" if wa.get("driver_name") else ""),
                 "status": "due_soon" if (wa.get("result") == "defects_found" and not wa.get("rectified")) else "valid",
             })
-    for sv in await db.service_records.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000):
+    for sv in await db.service_records.find(tenant_filter(user), {"_id": 0}).to_list(2000):
         if sv.get("service_date"):
             events.append({
                 "date": sv["service_date"], "type": "service", "title": f"Serviced — {sv.get('vehicle_reg')}",
@@ -3396,7 +3814,7 @@ async def calendar(user: User = Depends(get_current_user)):
     is_ie = (user.region or "UK").upper() in ("IE", "IRELAND", "RSA")
     mot_label = "CVRT" if is_ie else "MOT / Annual Test"
     tax_label = "Motor Tax" if is_ie else "Vehicle Tax"
-    for v in await db.vehicles.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000):
+    for v in await db.vehicles.find(tenant_filter(user), {"_id": 0}).to_list(2000):
         reg = v.get("registration")
         sub = f"{v.get('make', '')} {v.get('model', '')}".strip()
         for label, key in [(mot_label, "mot_due"), (tax_label, "tax_due"), ("Service Due", "service_due"),
@@ -3406,7 +3824,7 @@ async def calendar(user: User = Depends(get_current_user)):
                     "date": v[key], "type": "vehicle", "title": f"{label} — {reg}",
                     "subtitle": sub, "status": compliance_status(days_until(v[key])),
                 })
-    for dr in await db.drivers.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000):
+    for dr in await db.drivers.find(tenant_filter(user), {"_id": 0}).to_list(2000):
         name = dr.get("name")
         for label, key in [("Licence Expiry", "licence_expiry"), ("Driver CPC Expiry", "cpc_expiry"),
                            ("Tacho Card Expiry", "tacho_card_expiry"), ("Licence Check Due", "licence_check_due")]:
@@ -3415,7 +3833,7 @@ async def calendar(user: User = Depends(get_current_user)):
                     "date": dr[key], "type": "driver", "title": f"{label} — {name}",
                     "subtitle": "Driver compliance", "status": compliance_status(days_until(dr[key])),
                 })
-    for h in await db.holidays.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000):
+    for h in await db.holidays.find(tenant_filter(user), {"_id": 0}).to_list(2000):
         try:
             start = datetime.fromisoformat(h["from_date"]).date()
             end = datetime.fromisoformat(h["to_date"]).date()
@@ -3446,7 +3864,7 @@ class HolidayInput(BaseModel):
 
 @api_router.post("/holidays")
 async def create_holiday(data: HolidayInput, user: User = Depends(get_current_user)):
-    h = {"id": f"hol_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "name": data.name,
+    h = {"id": f"hol_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "org_id": user.org_id, "name": data.name,
          "from_date": data.from_date, "to_date": data.to_date, "notes": data.notes, "created_at": now_iso()}
     await db.holidays.insert_one(dict(h))
     h.pop("_id", None)
@@ -3455,7 +3873,7 @@ async def create_holiday(data: HolidayInput, user: User = Depends(get_current_us
 
 @api_router.delete("/holidays/{hid}")
 async def delete_holiday(hid: str, user: User = Depends(get_current_user)):
-    await db.holidays.delete_one({"id": hid, "user_id": user.user_id})
+    await db.holidays.delete_one({"id": hid, **tenant_filter(user)})
     return {"ok": True}
 
 
@@ -3468,7 +3886,7 @@ class CalendarEventInput(BaseModel):
 
 @api_router.post("/calendar/events")
 async def create_calendar_event(data: CalendarEventInput, user: User = Depends(get_current_user)):
-    ev = {"id": f"evt_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "date": data.date,
+    ev = {"id": f"evt_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "org_id": user.org_id, "date": data.date,
           "title": data.title, "notes": data.notes, "status": data.status, "created_at": now_iso()}
     await db.calendar_events.insert_one(dict(ev))
     ev.pop("_id", None)
@@ -3477,14 +3895,14 @@ async def create_calendar_event(data: CalendarEventInput, user: User = Depends(g
 
 @api_router.delete("/calendar/events/{eid}")
 async def delete_calendar_event(eid: str, user: User = Depends(get_current_user)):
-    await db.calendar_events.delete_one({"id": eid, "user_id": user.user_id})
+    await db.calendar_events.delete_one({"id": eid, **tenant_filter(user)})
     return {"ok": True}
 
 
 @api_router.put("/calendar/events/{eid}")
 async def update_calendar_event(eid: str, data: CalendarEventInput, user: User = Depends(get_current_user)):
     res = await db.calendar_events.update_one(
-        {"id": eid, "user_id": user.user_id},
+        {"id": eid, **tenant_filter(user)},
         {"$set": {"date": data.date, "title": data.title, "notes": data.notes, "status": data.status}},
     )
     if res.matched_count == 0:
@@ -3493,16 +3911,16 @@ async def update_calendar_event(eid: str, data: CalendarEventInput, user: User =
 
 
 # ---------- Dashboard + AI risk ----------
-async def gather_stats(user_id: str):
-    vehicles = await db.vehicles.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    drivers = await db.drivers.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    documents = await db.documents.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    defects = await db.defects.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    pmi_schedules = await db.pmi_schedules.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    trailers = await db.trailers.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    training = await db.training.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    insurance = await db.insurance.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    tacho = await db.tacho.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
+async def gather_stats(org_id: str):
+    vehicles = await db.vehicles.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    drivers = await db.drivers.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    documents = await db.documents.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    defects = await db.defects.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    pmi_schedules = await db.pmi_schedules.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    trailers = await db.trailers.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    training = await db.training.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    insurance = await db.insurance.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    tacho = await db.tacho.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
 
     alerts = []
     expired = due_soon = 0
@@ -3603,7 +4021,7 @@ async def gather_stats(user_id: str):
 
     open_defects = [d for d in defects if d.get("status") == "open"]
     major_defects = [d for d in open_defects if d.get("severity") in ("major", "safety_critical")]
-    wheel = await db.wheel_audits.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
+    wheel = await db.wheel_audits.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
     for w in wheel:
         d = days_until(w.get("next_due"))
         st = compliance_status(d)
@@ -3639,16 +4057,20 @@ def _score_and_band(counts, gaps):
 
 @api_router.get("/dashboard")
 async def dashboard(user: User = Depends(get_current_user)):
-    stats = await gather_stats(user.user_id)
-    gaps = await detect_gaps(user.user_id)
+    stats = await gather_stats(user.org_id)
+    gaps = await detect_gaps(user.org_id)
     score, band = _score_and_band(stats["counts"], gaps)
     stats["risk_score"] = score
     stats["risk_band"] = band
     stats["registered_users"] = await db.users.count_documents({})
     today = datetime.now(timezone.utc).date().isoformat()
+    # One score per organisation per day. The filter must NOT include user_id:
+    # the compliance score describes the fleet, not the person looking at it, so
+    # two colleagues opening the dashboard must update the same row rather than
+    # each writing their own and doubling the trend line.
     await db.compliance_history.update_one(
-        {"user_id": user.user_id, "date": today},
-        {"$set": {"user_id": user.user_id, "date": today, "score": score, "band": band,
+        {**tenant_filter(user), "date": today},
+        {"$set": {"org_id": user.org_id, "date": today, "score": score, "band": band,
                   "expired": stats["counts"]["expired"], "due_soon": stats["counts"]["due_soon"],
                   "recorded_at": now_iso()}},
         upsert=True,
@@ -3660,30 +4082,33 @@ async def dashboard(user: User = Depends(get_current_user)):
 async def compliance_history(days: int = 90, user: User = Depends(get_current_user)):
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
     rows = await db.compliance_history.find(
-        {"user_id": user.user_id, "date": {"$gte": cutoff}}, {"_id": 0}
+        {**tenant_filter(user), "date": {"$gte": cutoff}}, {"_id": 0}
     ).sort("date", 1).to_list(400)
     return {"history": rows}
 
 
-async def detect_gaps(user_id: str):
-    vehicles = await db.vehicles.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    drivers = await db.drivers.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    documents = await db.documents.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    insurance = await db.insurance.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    pmi = await db.pmi_schedules.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    pmi_records = await db.pmi_records.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
-    tacho = await db.tacho.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    training = await db.training.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    wheel = await db.wheel_audits.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
-    walkarounds = await db.walkaround_checks.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
-    test_history = await db.test_history.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
-    udoc = await db.users.find_one({"user_id": user_id}, {"_id": 0}) or {}
-    is_ie = udoc.get("region") == "IE"
+async def detect_gaps(org_id: str):
+    vehicles = await db.vehicles.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    drivers = await db.drivers.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    documents = await db.documents.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    insurance = await db.insurance.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    pmi = await db.pmi_schedules.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    pmi_records = await db.pmi_records.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
+    tacho = await db.tacho.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    training = await db.training.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    wheel = await db.wheel_audits.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    walkarounds = await db.walkaround_checks.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
+    test_history = await db.test_history.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
+    # Jurisdiction is a property of the organisation. Reading it from `users`
+    # would pick an arbitrary member and, since region no longer lives there,
+    # would silently default every multi-member org to UK terminology.
+    org = await db.organisations.find_one({"org_id": org_id}, {"_id": 0}) or {}
+    is_ie = org.get("region") == "IE"
     mot_label = "CVRT" if is_ie else "MOT"
     test_label = "CVRT test" if is_ie else "annual test"
 
     gaps = []
-    operator = await db.operator.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one({"org_id": org_id}, {"_id": 0}) or {}
     if not operator.get("operator_licence_number"):
         gaps.append({"area": "Operator", "item": "No Operator Licence number recorded", "priority": "high"})
     if not operator.get("tm_name"):
@@ -3768,16 +4193,18 @@ async def detect_gaps(user_id: str):
 
 @api_router.post("/ai/risk-insight")
 async def ai_risk_insight(user: User = Depends(get_current_user)):
-    stats = await gather_stats(user.user_id)
+    stats = await gather_stats(user.org_id)
     c = stats["counts"]
     top = stats["alerts"][:8]
     alert_text = "; ".join([f"{a['name']} {a['item']} {a['status']}" for a in top]) or "No outstanding alerts"
-    gaps = await detect_gaps(user.user_id)
+    gaps = await detect_gaps(user.org_id)
     score, _band = _score_and_band(c, gaps)
     order = {"high": 0, "medium": 1, "low": 2}
     gaps.sort(key=lambda g: order.get(g["priority"], 3))
     gap_text = "; ".join([f"[{g['priority']}] {g['item']}" for g in gaps[:14]]) or "No obvious record gaps detected"
-    is_ie = (await db.users.find_one({"user_id": user.user_id}, {"_id": 0}) or {}).get("region") == "IE"
+    # Region is resolved from the organisation during authentication, so no
+    # extra lookup is needed (and the copy on the user document is now stale).
+    is_ie = user.region == "IE"
     region_note = ("This operator is in IRELAND (RSA/CVRT rules). Do NOT recommend laden brake tests or DVSA-specific requirements; use RSA/CVRT terminology (CVRT, CRW)."
                    if is_ie else "This operator is in the UK (DVSA rules); use DVSA terminology (MOT, safety inspections with laden roller brake test).")
     try:
@@ -3833,7 +4260,7 @@ def _norm_recipient(r) -> dict:
 
 @api_router.get("/reminders/settings")
 async def get_reminder_settings(user: User = Depends(get_current_user)):
-    doc = await db.reminder_settings.find_one({"user_id": user.user_id}, {"_id": 0})
+    doc = await db.reminder_settings.find_one(tenant_filter(user), {"_id": 0})
     recipients = [_norm_recipient(r) for r in (doc or {}).get("recipients", [])]
     return {"recipients": recipients, "areas": ALL_AREAS, "presets": AREA_PRESETS}
 
@@ -3841,8 +4268,8 @@ async def get_reminder_settings(user: User = Depends(get_current_user)):
 @api_router.put("/reminders/settings")
 async def update_reminder_settings(data: ReminderSettingsInput, user: User = Depends(get_current_user)):
     recipients = [r.model_dump() for r in data.recipients]
-    payload = {"user_id": user.user_id, "recipients": recipients, "updated_at": now_iso()}
-    await db.reminder_settings.update_one({"user_id": user.user_id}, {"$set": payload}, upsert=True)
+    payload = {"user_id": user.user_id, "org_id": user.org_id, "recipients": recipients, "updated_at": now_iso()}
+    await db.reminder_settings.update_one(tenant_filter(user), {"$set": payload}, upsert=True)
     return {"ok": True, "recipients": recipients}
 
 
@@ -3896,11 +4323,13 @@ def build_reminder_html(company: str, alerts: list, authority: str, weekly: bool
     )
 
 
-async def _deliver_reminder(user_id: str, to_emails: list, alerts: list, weekly: bool = False) -> str:
-    operator = await db.operator.find_one({"user_id": user_id}, {"_id": 0}) or {}
+async def _deliver_reminder(org_id: str, to_emails: list, alerts: list, weekly: bool = False) -> str:
+    operator = await db.operator.find_one({"org_id": org_id}, {"_id": 0}) or {}
     company = operator.get("company_name") or "Your fleet"
-    udoc = await db.users.find_one({"user_id": user_id}, {"_id": 0}) or {}
-    authority = "RSA" if udoc.get("region") == "IE" else "DVSA"
+    # Jurisdiction follows the organisation, not whoever happens to receive the
+    # email -- reminders go to addresses that need not belong to a user at all.
+    org = await db.organisations.find_one({"org_id": org_id}, {"_id": 0}) or {}
+    authority = "RSA" if org.get("region") == "IE" else "DVSA"
     html = build_reminder_html(company, alerts, authority, weekly=weekly)
     if weekly:
         subject = f"HaulCheck weekly summary — {len(alerts)} item(s) need attention" if alerts else "HaulCheck weekly summary — all clear"
@@ -3922,11 +4351,11 @@ def _filter_alerts(alerts: list, areas: list) -> list:
     return [a for a in alerts if a.get("area") in allow]
 
 
-async def _reminder_alerts(user_id: str) -> list:
+async def _reminder_alerts(org_id: str) -> list:
     """All items expired or due within 30 days (incl. open defects), each tagged with an area."""
-    stats = await gather_stats(user_id)
+    stats = await gather_stats(org_id)
     alerts = [dict(a) for a in stats["alerts"] if a["status"] in ("expired", "due_soon")]
-    defects = await db.defects.find({"user_id": user_id, "status": "open"}, {"_id": 0}).to_list(1000)
+    defects = await db.defects.find({"org_id": org_id, "status": "open"}, {"_id": 0}).to_list(1000)
     for d in defects:
         sev = d.get("severity", "minor")
         alerts.append({
@@ -3936,7 +4365,7 @@ async def _reminder_alerts(user_id: str) -> list:
             "status": "expired" if sev in ("major", "safety_critical") else "due_soon",
             "days": None,
         })
-    services = await db.service_records.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
+    services = await db.service_records.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
     for sv in services:
         d = days_until(sv.get("next_service_due"))
         if d is not None and d <= 30:
@@ -3947,10 +4376,10 @@ async def _reminder_alerts(user_id: str) -> list:
     for a in alerts:
         a["area"] = AREA_OF.get(a["type"], "documents")
     return alerts
-async def _process_daily_user(user_id: str, recipients: list) -> dict:
+async def _process_daily_user(org_id: str, recipients: list) -> dict:
     """Per daily recipient, email only items that newly entered their filtered 30-day window (dedup)."""
-    alerts = await _reminder_alerts(user_id)
-    log_doc = await db.reminder_log.find_one({"user_id": user_id}, {"_id": 0}) or {}
+    alerts = await _reminder_alerts(org_id)
+    log_doc = await db.reminder_log.find_one({"org_id": org_id}, {"_id": 0}) or {}
     sent = log_doc.get("sent", {})
     total_new = 0
     for raw in recipients:
@@ -3962,27 +4391,27 @@ async def _process_daily_user(user_id: str, recipients: list) -> dict:
         logged = set(sent.get(r["email"], [])) & current_keys  # drop renewed/deleted
         new_items = [a for a in r_alerts if _alert_key(a) not in logged]
         if new_items:
-            await _deliver_reminder(user_id, [r["email"]], new_items)
+            await _deliver_reminder(org_id, [r["email"]], new_items)
             logged |= {_alert_key(a) for a in new_items}
             total_new += len(new_items)
         sent[r["email"]] = list(logged)
     await db.reminder_log.update_one(
-        {"user_id": user_id},
-        {"$set": {"user_id": user_id, "sent": sent, "updated_at": now_iso()}},
+        {"org_id": org_id},
+        {"$set": {"org_id": org_id, "sent": sent, "updated_at": now_iso()}},
         upsert=True,
     )
     return {"new_item_count": total_new}
 
 
-async def _process_weekly_user(user_id: str, recipients: list) -> int:
-    alerts = await _reminder_alerts(user_id)
+async def _process_weekly_user(org_id: str, recipients: list) -> int:
+    alerts = await _reminder_alerts(org_id)
     count = 0
     for raw in recipients:
         r = _norm_recipient(raw)
         if r["frequency"] != "weekly":
             continue
         r_alerts = _filter_alerts(alerts, r["areas"])
-        await _deliver_reminder(user_id, [r["email"]], r_alerts, weekly=True)
+        await _deliver_reminder(org_id, [r["email"]], r_alerts, weekly=True)
         count += 1
     return count
 
@@ -3994,7 +4423,7 @@ async def run_daily_reminders():
         if not s.get("recipients"):
             continue
         try:
-            res = await _process_daily_user(s["user_id"], s["recipients"])
+            res = await _process_daily_user(s["org_id"], s["recipients"])
             if res["new_item_count"]:
                 logger.info(f"Daily reminder sent to {s['user_id']} ({res['new_item_count']} new items)")
         except Exception as e:
@@ -4008,7 +4437,7 @@ async def run_weekly_reminders():
         if not s.get("recipients"):
             continue
         try:
-            sent = await _process_weekly_user(s["user_id"], s["recipients"])
+            sent = await _process_weekly_user(s["org_id"], s["recipients"])
             if sent:
                 logger.info(f"Weekly summary sent to {s['user_id']} ({sent} recipients)")
         except Exception as e:
@@ -4017,17 +4446,17 @@ async def run_weekly_reminders():
 
 @api_router.post("/reminders/send")
 async def send_reminders(user: User = Depends(get_current_user)):
-    settings = await db.reminder_settings.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    settings = await db.reminder_settings.find_one(tenant_filter(user), {"_id": 0}) or {}
     recipients = settings.get("recipients", [])
     if not recipients:
         raise HTTPException(status_code=400, detail="No recipient emails configured. Add at least one in Settings.")
-    alerts = await _reminder_alerts(user.user_id)
+    alerts = await _reminder_alerts(user.org_id)
     results = []
     try:
         for raw in recipients:
             r = _norm_recipient(raw)
             r_alerts = _filter_alerts(alerts, r["areas"])
-            eid = await _deliver_reminder(user.user_id, [r["email"]], r_alerts)
+            eid = await _deliver_reminder(user.org_id, [r["email"]], r_alerts)
             results.append({"email": r["email"], "item_count": len(r_alerts), "email_id": eid})
     except Exception as e:
         logging.error(f"Reminder email failed: {e}")
@@ -4037,13 +4466,13 @@ async def send_reminders(user: User = Depends(get_current_user)):
 
 @api_router.post("/reminders/run-scheduled")
 async def run_scheduled_now(user: User = Depends(get_current_user)):
-    settings = await db.reminder_settings.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    settings = await db.reminder_settings.find_one(tenant_filter(user), {"_id": 0}) or {}
     recipients = settings.get("recipients", [])
     if not recipients:
         raise HTTPException(status_code=400, detail="No recipient emails configured. Add at least one in Settings.")
     try:
-        daily = await _process_daily_user(user.user_id, recipients)
-        weekly_sent = await _process_weekly_user(user.user_id, recipients)
+        daily = await _process_daily_user(user.org_id, recipients)
+        weekly_sent = await _process_weekly_user(user.org_id, recipients)
     except Exception as e:
         logging.error(f"Scheduled reminder run failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to run: {e}")
@@ -4055,11 +4484,11 @@ def _fmt(v):
     return v if v not in (None, "") else "—"
 
 
-async def _get_logo_bytes(user_id: str, operator: dict):
+async def _get_logo_bytes(org_id: str, operator: dict):
     lid = (operator or {}).get("logo_file_id")
     if not lid:
         return None
-    frec = await db.files.find_one({"id": lid, "user_id": user_id, "is_deleted": False}, {"_id": 0})
+    frec = await db.files.find_one({"id": lid, "org_id": org_id, "is_deleted": False}, {"_id": 0})
     if not frec:
         return None
     try:
@@ -4070,14 +4499,14 @@ async def _get_logo_bytes(user_id: str, operator: dict):
         return None
 
 
-async def _collect_files(user_id: str, file_ids: list):
+async def _collect_files(org_id: str, file_ids: list):
     files = []
     seen = set()
     for fid in file_ids:
         if not fid or fid in seen:
             continue
         seen.add(fid)
-        frec = await db.files.find_one({"id": fid, "user_id": user_id, "is_deleted": False}, {"_id": 0})
+        frec = await db.files.find_one({"id": fid, "org_id": org_id, "is_deleted": False}, {"_id": 0})
         if not frec:
             continue
         try:
@@ -4090,13 +4519,13 @@ async def _collect_files(user_id: str, file_ids: list):
 
 @api_router.get("/export/driver/{driver_id}")
 async def export_driver(driver_id: str, include_files: bool = Query(False), user: User = Depends(get_current_user)):
-    d = await db.drivers.find_one({"id": driver_id, "user_id": user.user_id}, {"_id": 0})
+    d = await db.drivers.find_one({"id": driver_id, **tenant_filter(user)}, {"_id": 0})
     if not d:
         raise HTTPException(status_code=404, detail="Driver not found")
     training = await db.training.find(
-        {"user_id": user.user_id, "$or": [{"driver_id": driver_id}, {"driver_name": d.get("name")}]}, {"_id": 0}
+        {**tenant_filter(user), "$or": [{"driver_id": driver_id}, {"driver_name": d.get("name")}]}, {"_id": 0}
     ).to_list(1000)
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     sections = [
         {"type": "kv", "heading": "Driver Details", "pairs": [
             ("Name", d.get("name")), ("Licence number", d.get("licence_number")),
@@ -4116,10 +4545,10 @@ async def export_driver(driver_id: str, include_files: bool = Query(False), user
     pdf = await asyncio.to_thread(
         build_report_pdf, "Driver Compliance File", d.get("name", ""),
         [("Operator", operator.get("company_name", "")), ("O-Licence", operator.get("operator_licence_number", ""))], sections,
-        await _get_logo_bytes(user.user_id, operator), "RSA (Ireland)" if user.region == "IE" else "DVSA (UK)")
+        await _get_logo_bytes(user.org_id, operator), "RSA (Ireland)" if user.region == "IE" else "DVSA (UK)")
     if include_files:
         fids = [a.get("file_id") for t in training for a in (t.get("attachments") or [])]
-        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.user_id, fids))
+        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.org_id, fids))
     fname = f"driver-{(d.get('name') or 'file').replace(' ', '_')}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
@@ -4140,7 +4569,7 @@ async def email_account_pack(data: EmailPackInput, user: User = Depends(get_curr
     if not data.to:
         raise HTTPException(status_code=400, detail="At least one recipient is required")
     pdf, fname = await _build_account_pdf(user, include_files=True)
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
     company = operator.get("company_name") or "our fleet"
     authority = "RSA" if user.region == "IE" else "DVSA"
     body = (data.message or "").replace("\n", "<br/>")
@@ -4173,16 +4602,16 @@ async def email_account_pack(data: EmailPackInput, user: User = Depends(get_curr
 
 
 async def _build_account_pdf(user: User, include_files: bool):
-    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
-    vehicles = await db.vehicles.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    trailers = await db.trailers.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    drivers = await db.drivers.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    training = await db.training.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    pmi = await db.pmi_schedules.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    insurance = await db.insurance.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    tacho = await db.tacho.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    defects = await db.defects.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
-    wheel = await db.wheel_audits.find({"user_id": user.user_id}, {"_id": 0}).to_list(1000)
+    operator = await db.operator.find_one(tenant_filter(user), {"_id": 0}) or {}
+    vehicles = await db.vehicles.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    trailers = await db.trailers.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    drivers = await db.drivers.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    training = await db.training.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    pmi = await db.pmi_schedules.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    insurance = await db.insurance.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    tacho = await db.tacho.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    defects = await db.defects.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+    wheel = await db.wheel_audits.find(tenant_filter(user), {"_id": 0}).to_list(1000)
     cs, du = compliance_status, days_until
 
     def worst_vehicle(v):
@@ -4240,10 +4669,10 @@ async def _build_account_pdf(user: User, include_files: bool):
     pdf = await asyncio.to_thread(
         build_report_pdf, "Fleet Compliance Report", subtitle,
         [("Authority", authority), ("O-Licence", operator.get("operator_licence_number", ""))], sections,
-        await _get_logo_bytes(user.user_id, operator), authority)
+        await _get_logo_bytes(user.org_id, operator), authority)
     if include_files:
-        all_files = await db.files.find({"user_id": user.user_id, "is_deleted": False}, {"_id": 0, "id": 1}).to_list(2000)
-        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.user_id, [f["id"] for f in all_files]))
+        all_files = await db.files.find({**tenant_filter(user), "is_deleted": False}, {"_id": 0, "id": 1}).to_list(2000)
+        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.org_id, [f["id"] for f in all_files]))
     if include_files:
         slug = re.sub(r"[^A-Za-z0-9]+", "-", (operator.get("company_name") or "Fleet")).strip("-") or "Fleet"
         fname = f"{slug}-Audit-Pack-{datetime.now(timezone.utc).strftime('%Y-%m')}.pdf"

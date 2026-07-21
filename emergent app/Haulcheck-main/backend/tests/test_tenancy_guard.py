@@ -38,6 +38,10 @@ QUERY = re.compile(
     re.DOTALL,
 )
 USER_ID_FILTER = re.compile(r"[\"']user_id[\"']\s*:")
+# Must match org_id used as a *filter key*. Matching the bare substring would
+# wave through `{"user_id": org_id}` -- the right value under the wrong key,
+# which scopes by person while looking like it scopes by org.
+ORG_ID_KEY = re.compile(r"[\"']org_id[\"']\s*:|tenant_filter\s*\(")
 
 # Identity and platform collections are legitimately keyed by user_id -- they
 # describe a person, not a customer's records.
@@ -52,8 +56,40 @@ IDENTITY_COLLECTIONS = {
 }
 
 
+# A deliberate, reviewed exception is marked at the call site rather than
+# listed here, so the justification travels with the code:
+#
+#     # tenancy: allow-user-scope -- runs before the org exists
+#     op = await db.operator.find_one({"user_id": uid}, {"_id": 0})
+#
+# Keeping the escape hatch narrow and visible is the point: a reviewer seeing
+# this comment in a diff knows to check the reasoning.
+PRAGMA = "tenancy: allow-user-scope"
+
+
 def _line_of(source: str, index: int) -> int:
     return source.count("\n", 0, index) + 1
+
+
+def _is_exempt(source: str, start: int) -> bool:
+    """True when the pragma appears on the statement or in the comment block above it.
+
+    Walks back over the contiguous run of comment lines immediately preceding
+    the statement, so a multi-line justification works and the pragma does not
+    have to be crammed onto one line. Stops at the first non-comment line, which
+    keeps an exemption from leaking onto unrelated code further up.
+    """
+    line_start = source.rfind("\n", 0, start) + 1
+    line_end = source.find("\n", start)
+    if PRAGMA in source[line_start:line_end if line_end != -1 else len(source)]:
+        return True
+    lines = source[:line_start].splitlines()
+    for line in reversed(lines):
+        if not line.strip().startswith("#"):
+            return False
+        if PRAGMA in line:
+            return True
+    return False
 
 
 def _violations() -> list[str]:
@@ -68,7 +104,9 @@ def _violations() -> list[str]:
             continue
         # A user_id clause is fine when it sits *alongside* an org filter --
         # e.g. narrowing a tenant's records to one author.
-        if "org_id" in args or "tenant_filter" in args:
+        if ORG_ID_KEY.search(args):
+            continue
+        if _is_exempt(source, match.start()):
             continue
         line = _line_of(source, match.start())
         snippet = " ".join(match.group(0).split())[:110]
