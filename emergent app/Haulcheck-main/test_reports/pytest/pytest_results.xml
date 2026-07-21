@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="53" time="84.287" timestamp="2026-07-08T11:50:30.164916+00:00" hostname="agent-env-85e5ff70-2ba2-4cc5-bcaf-01dfad592bba"><testcase classname="tests.backend_test.TestAuth" name="test_register_new_user" time="0.417" /><testcase classname="tests.backend_test.TestAuth" name="test_register_duplicate_email" time="0.700" /><testcase classname="tests.backend_test.TestTacho" name="test_create_list_edit_delete_and_statuses" time="2.337" /><testcase classname="tests.backend_test.TestAuth" name="test_login_seed_account" time="0.404" /><testcase classname="tests.backend_test.TestAuth" name="test_login_wrong_password" time="0.390" /><testcase classname="tests.backend_test.TestAuth" name="test_me_requires_auth" time="0.137" /><testcase classname="tests.backend_test.TestAuth" name="test_me_returns_user" time="0.098" /><testcase classname="tests.backend_test.TestAuth" name="test_logout" time="0.095" /><testcase classname="tests.backend_test.TestInsurance" name="test_create_list_edit_delete_and_statuses" time="1.871" /><testcase classname="tests.backend_test.TestTacho" name="test_log_download_advances_next_due" time="0.550" /><testcase classname="tests.backend_test.TestTacho" name="test_log_download_missing_record_returns_404" time="0.116" /><testcase classname="tests.backend_test.TestTacho" name="test_edit_missing_returns_404" time="0.223" /><testcase classname="tests.backend_test.TestTacho" name="test_requires_auth" time="0.417" /><testcase classname="tests.backend_test.TestTacho" name="test_dashboard_and_calendar_include_tacho" time="0.437" /><testcase classname="tests.backend_test.TestTacho" name="test_isolation_between_users" time="4.337" /><testcase classname="tests.backend_test.TestInsurance" name="test_edit_missing_returns_404" time="0.311" /><testcase classname="tests.backend_test.TestInsurance" name="test_requires_auth" time="0.415" /><testcase classname="tests.backend_test.TestInsurance" name="test_ai_import_creates_policy_from_text_certificate" time="5.559" /><testcase classname="tests.backend_test.TestPMI" name="test_pmi_create_auto_next_due" time="0.184" /><testcase classname="tests.backend_test.TestPMI" name="test_pmi_full_lifecycle_and_complete" time="0.943" /><testcase classname="tests.backend_test.TestPMI" name="test_pmi_complete_missing_schedule_returns_404" time="0.128" /><testcase classname="tests.backend_test.TestPMI" name="test_pmi_edit_missing_returns_404" time="0.106" /><testcase classname="tests.backend_test.TestPMI" name="test_pmi_requires_auth" time="0.203" /><testcase classname="tests.backend_test.TestRegion" name="test_default_region_is_uk_on_register" time="0.506" /><testcase classname="tests.backend_test.TestInsurance" name="test_ai_import_requires_auth" time="0.087" /><testcase classname="tests.backend_test.TestRegion" name="test_switch_region_persists" time="0.596" /><testcase classname="tests.backend_test.TestInsurance" name="test_ai_import_multiple_files" time="32.861"><failure message="requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='transport-verify-3.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/insurance/ins_55e0a7b037 (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfc288d5fded0&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)'))">/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:204: in _new_conn
+    sock = connection.create_connection(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/connection.py:85: in create_connection
+    raise err
+/root/.venv/lib/python3.11/site-packages/urllib3/util/connection.py:73: in create_connection
+    sock.connect(sa)
+E   TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:488: in _make_request
+    raise new_e
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:464: in _make_request
+    self._validate_conn(conn)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:1106: in _validate_conn
+    conn.connect()
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:759: in connect
+    self.sock = sock = self._new_conn()
+                       ^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:213: in _new_conn
+    raise ConnectTimeoutError(
+E   urllib3.exceptions.ConnectTimeoutError: (&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfc288d5fded0&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)')
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:543: in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='transport-verify-3.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/insurance/ins_55e0a7b037 (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfc288d5fded0&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)'))
+
+During handling of the above exception, another exception occurred:
+backend/tests/backend_test.py:778: in test_ai_import_multiple_files
+    requests.delete(f"{API}/insurance/{created['id']}", headers=auth_headers, timeout=15)
+/root/.venv/lib/python3.11/site-packages/requests/api.py:180: in delete
+    return request("delete", url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:71: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:717: in send
+    raise ConnectTimeout(e, request=request)
+E   requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='transport-verify-3.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/insurance/ins_55e0a7b037 (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfc288d5fded0&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)'))</failure></testcase><testcase classname="tests.backend_test.TestRegion" name="test_invalid_region_rejected" time="0.108" /><testcase classname="tests.backend_test.TestRegion" name="test_region_requires_auth" time="0.098" /><testcase classname="tests.backend_test.TestRegion" name="test_insurance_isolation_between_users" time="30.743"><failure message="requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='transport-verify-3.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/insurance (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfcbefc15ad50&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)'))">/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:204: in _new_conn
+    sock = connection.create_connection(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/connection.py:85: in create_connection
+    raise err
+/root/.venv/lib/python3.11/site-packages/urllib3/util/connection.py:73: in create_connection
+    sock.connect(sa)
+E   TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:788: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:488: in _make_request
+    raise new_e
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:464: in _make_request
+    self._validate_conn(conn)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:1106: in _validate_conn
+    conn.connect()
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:759: in connect
+    self.sock = sock = self._new_conn()
+                       ^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:213: in _new_conn
+    raise ConnectTimeoutError(
+E   urllib3.exceptions.ConnectTimeoutError: (&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfcbefc15ad50&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)')
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:696: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:842: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:543: in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='transport-verify-3.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/insurance (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfcbefc15ad50&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)'))
+
+During handling of the above exception, another exception occurred:
+backend/tests/backend_test.py:820: in test_insurance_isolation_between_users
+    r = requests.post(f"{API}/insurance", json={"policy_type": "Green Card", "insurer": "TEST-Iso", "expiry_date": FUTURE_VALID}, headers=hA, timeout=15)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:134: in post
+    return request("post", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:71: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:651: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:784: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:717: in send
+    raise ConnectTimeout(e, request=request)
+E   requests.exceptions.ConnectTimeout: HTTPSConnectionPool(host='transport-verify-3.preview.emergentagent.com', port=443): Max retries exceeded with url: /api/insurance (Caused by ConnectTimeoutError(&lt;HTTPSConnection(host='transport-verify-3.preview.emergentagent.com', port=443) at 0xfcbefc15ad50&gt;, 'Connection to transport-verify-3.preview.emergentagent.com timed out. (connect timeout=15)'))</failure></testcase><testcase classname="tests.backend_test.TestVehicles" name="test_create_list_edit_delete" time="13.086" /><testcase classname="tests.backend_test.TestFileUpload" name="test_upload_and_download_via_bearer" time="20.380" /><testcase classname="tests.backend_test.TestVehicles" name="test_edit_missing_returns_404" time="1.154" /><testcase classname="tests.backend_test.TestVehicles" name="test_requires_auth" time="0.104" /><testcase classname="tests.backend_test.TestTrailers" name="test_create_list_edit_delete" time="12.081" /><testcase classname="tests.backend_test.TestFileUpload" name="test_upload_requires_auth" time="0.110" /><testcase classname="tests.backend_test.TestFileUpload" name="test_download_requires_auth" time="5.235" /><testcase classname="tests.backend_test.TestTrailers" name="test_edit_missing_returns_404" time="0.097" /><testcase classname="tests.backend_test.TestTrailers" name="test_requires_auth" time="0.095" /><testcase classname="tests.backend_test.TestDashboard" name="test_dashboard_shape" time="11.307" /><testcase classname="tests.backend_test.TestFileUpload" name="test_download_wrong_user_forbidden" time="0.738" /><testcase classname="tests.backend_test.TestTraining" name="test_create_list_filter_edit_delete" time="0.926" /><testcase classname="tests.backend_test.TestTraining" name="test_edit_missing_returns_404" time="0.098" /><testcase classname="tests.backend_test.TestTraining" name="test_requires_auth" time="0.315" /><testcase classname="tests.backend_test.TestDrivers" name="test_create_list_edit_delete" time="0.526" /><testcase classname="tests.backend_test.TestDocuments" name="test_create_list_edit_delete" time="0.652" /><testcase classname="tests.backend_test.TestDefects" name="test_create_list_status_delete" time="1.922" /><testcase classname="tests.backend_test.TestDashboardPMI" name="test_dashboard_counts_include_pmi_and_alerts" time="0.304" /><testcase classname="tests.backend_test.TestDashboardTrailersTraining" name="test_dashboard_counts_and_alerts_include_trailers_training" time="3.924" /><testcase classname="tests.backend_test.TestIsolation" name="test_data_scoped_per_user" time="0.955" /><testcase classname="tests.backend_test.TestDashboard" name="test_ai_risk_insight_returns_text" time="2.960" /><testcase classname="tests.backend_test.TestCalendar" name="test_calendar_returns_events_and_shape" time="0.279" /><testcase classname="tests.backend_test.TestCalendar" name="test_calendar_requires_auth" time="0.098" /></testsuite></testsuites>

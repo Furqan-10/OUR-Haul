@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 16 — verified the tacho 'due soon' threshold fix (compliance_status(days, soon_days=30) + TACHO_SOON_DAYS=7 applied at GET /api/tacho, gather_stats tacho alerts, and calendar tacho events). All 8 pytest tests PASS in ~8s (junit: /app/test_reports/pytest/pytest_iter16.xml). Coverage: (1) Fresh 28-day-cycle download is 'valid' — POST /api/tacho with last_download=today (unique reference 'QA Far Driver <uuid>') → GET /api/tacho returns days_left≈28 and status='valid'; GET /api/dashboard has NO tacho alert for that reference; POST /api/ai/risk-insight checklist contains NO tacho 'due soon' item for it. (2) ~5-days-out download IS 'due_soon' — last_download=today-23 gives next_due≈5d, status='due_soon', and dashboard alert type=tacho name=<ref> status=due_soon is present. (3) Boundary at ~10 days out — last_download=today-18 gives next_due≈10d, status='valid' (10 > 7-day window), no tacho alert. (4) Non-tacho window unchanged — vehicle with mot_due=today+20 still returns mot_status='due_soon' (30-day window intact). (5) Regression on /api/dashboard, /api/tacho, /api/calendar, /api/ai/risk-insight — all return well-formed payloads for the manager account. All QA test tacho + vehicle records created were deleted via API and verified with a direct Mongo scan (0 leftovers). Manager seed data untouched. NOTE: the review-request mentions endpoint /api/dashboard/stats but the actual FastAPI route is /api/dashboard — corrected in the test helper.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/dashboard/stats", "issue": "Endpoint referenced in the review-request does not exist — the correct endpoint is /api/dashboard (returns the {counts, alerts, risk_score, risk_band} payload). No user-facing bug; just a mismatch between the ticket and the actual route."},
+      {"endpoint": "DELETE /api/tacho/{tid}, /api/vehicles/{vid}", "issue": "Pre-existing behaviour from iter14/15 — silent no-op on missing id (returns {ok:true} instead of 404). Not a regression for this fix."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter16_tacho_soon_days.py",
+    "/app/test_reports/pytest/pytest_iter16.xml"
+  ],
+  "action_items": [
+    "Optional: rename or alias /api/dashboard → /api/dashboard/stats to match documentation / spec references (or update spec)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:88 `compliance_status(days, soon_days: int = 30)` — soon_days is well-typed and defaults preserve the pre-existing 30-day behaviour for all callers that don't override it (vehicles/documents/drivers). ✓",
+    "server.py:98 `TACHO_SOON_DAYS = 7` — module-level constant is used consistently at the three tacho call-sites (list route ~1457, gather_stats tacho block ~2062, calendar ~1894). Grep confirms no other tacho status computation exists. ✓",
+    "server.py:2054-2059 `tacho_latest` dedup by (source_type, reference) — the comparison `(tc.get('last_download') or tc.get('next_due') or '') > (cur...)` works for ISO YYYY-MM-DD strings but will fail lexicographically if any legacy row stores a non-ISO date. Not a regression, but worth a defensive parse.",
+    "server.py:1445-1450 `compute_next_due` accepts either a YYYY-MM-DD or a full ISO timestamp (via `datetime.fromisoformat`). Verified end-to-end that POST with last_download='YYYY-MM-DD' yields a correct next_due date.",
+    "server.py file is ~2736 lines — pre-existing tech-debt flag from iters 12–15. Not a regression."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter16_tacho_soon_days.py"],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "N/A — backend-only per request"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT).",
+  "seed_data_creation": "During tests (all cleaned via API DELETE; Mongo scan post-run: 0 leftovers in tacho/vehicles/drivers): tacho 'QA Far Driver <uuid>', 'QA Near Driver <uuid>', 'QA Boundary Driver <uuid>' (Driver Card, notes='TEST iter16'); vehicle registration 'QA-MOT-<hash>'.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 16 confirmed the tacho 'due soon' threshold fix. Suite: /app/backend/tests/test_iter16_tacho_soon_days.py — 8 tests, ~8s, deterministic (uses real dates computed from today; unique uuid-suffixed references so gather_stats' tacho_latest dedup doesn't collide with previous runs or the seed 'Darren Wade' record). Key contract: (a) GET /api/tacho returns status/days_left using TACHO_SOON_DAYS=7. (b) GET /api/dashboard (NOT /api/dashboard/stats) returns {alerts:[{type,name,item,status,days},...]} — filter by type=='tacho' AND name==reference. (c) POST /api/ai/risk-insight returns {checklist, insight, score} — always assert against checklist (deterministic), not insight (LLM prose). (d) Non-tacho callers of compliance_status still use the 30-day default — vehicle mot_status verified.",
+  "rca of the issue": "N/A — this iteration is verification, not RCA. The fix (parameterizing compliance_status with soon_days and using TACHO_SOON_DAYS=7 at the three tacho call-sites) is confirmed correct: (i) fresh 28-day download is 'valid' (no false 'due soon'), (ii) ~5-day-out download is 'due_soon' with a dashboard alert, (iii) boundary at ~10 days stays 'valid', and (iv) non-tacho vehicle mot windows retain the 30-day 'due soon' behaviour."
+}

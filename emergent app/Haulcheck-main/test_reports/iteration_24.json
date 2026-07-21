@@ -1,0 +1,57 @@
+{
+  "summary": "Iteration 24 — Full end-to-end testing of the new DRIVER MOBILE APP (PWA at /driver). Backend: created /app/backend/tests/test_driver_app.py (17 tests) covering access-code issuance + regeneration, driver login (success + invalid + missing code), /driver/me, /driver/vehicle, /driver/vehicles, /driver/upload, /driver/walkaround, /driver/defect and cross-role security. 16/17 pytest passed. One CRITICAL security failure discovered: a DRIVER JWT can be used against MANAGER endpoints (GET /api/vehicles returned 200 with driver token). Frontend: PWA verified on mobile viewport (420x860). Invalid code correctly stays on login. Valid code logs into driver-home with 'Welcome back John Smith', reg 'AB12 CDE' and all 5 tiles. Walkaround screen renders exactly 24 checklist items grouped Internal/External; marking item 0 fail + note + Submit returns to home. Defect screen: severity=major + description + Submit works. Compliance shows 3 items (Licence/CPC/Tacho) with status chips + documents section. Vehicle screen shows reg + MOT/Service/Tax rows. Tacho screen renders upload UI. Manager side verified: Drivers page shows the 6-char code in the driver-access-code block and driver-code-value; edit dialog exposes the drv-assigned-vehicle Select. Maintenance > Daily Checks tab shows the driver's TEST walkaround with 'Defects found' badge. Maintenance > Defects tab shows the driver's defect 'TEST driver mobile defect - brake noise' with 'Reported by John Smith'.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/vehicles (and all other /api/* manager endpoints)",
+        "issue": "CRITICAL AUTH BYPASS — a driver JWT is accepted as a manager token. `_authenticate()` in server.py decodes any JWT signed with JWT_SECRET and looks up `payload['user_id']`. Driver JWTs (create_driver_jwt) embed the operator's user_id under the same key AND set role='driver', but `_authenticate` never checks the role claim. Effect: any authenticated driver can call every manager endpoint (vehicles/drivers/defects/documents/operator/etc.) with their operator's full permissions, and can therefore read/mutate ALL fleet data, generate new access codes for other drivers, delete records, etc. Verified: GET /api/vehicles with Bearer <driver_token> returned 200 with the operator's full vehicle list. Fix: reject the JWT in _authenticate() when payload.get('role') == 'driver' (or require role in {None, 'manager', 'user'}).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/driver/login",
+        "issue": "Backend matches access_code exactly (case-sensitive) but the frontend upper-cases before submit. Codes are always stored upper-case (from _CODE_CHARS), so a lower-case code from other clients (curl/mobile paste) returns 401. Recommend either uppercasing the incoming code in driver_login or matching case-insensitively."
+      },
+      {
+        "endpoint": "GET /api/driver/vehicles",
+        "issue": "Returns a bare list of registration strings, not vehicle objects. Fine for internal use but non-obvious from the name; add OpenAPI response model or rename for clarity."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_driver_app.py",
+    "/app/test_reports/pytest/pytest_iter24.xml"
+  ],
+  "action_items": [
+    "URGENT: In server.py `_authenticate()`, reject bearer tokens whose decoded payload has role=='driver' (or explicitly require the manager path). This is a full auth-bypass — a driver can currently impersonate their operator on every manager endpoint.",
+    "Consider making driver access-code lookup case-insensitive (upper() the input in POST /api/driver/login) since manager might read the code aloud in mixed case.",
+    "Optional: return vehicle objects (or at least {registration, id}) from GET /api/driver/vehicles for future UI use."
+  ],
+  "critical_code_review_comments": [
+    "server.py `_authenticate` (lines 685-710) only checks JWT signature + user_id; it does not inspect the `role` claim, so a driver JWT which contains role='driver' but also user_id=<operator_id> passes as the operator. This is the root cause of the auth-bypass. `get_current_driver` correctly checks role='driver', but the reverse guard on the manager path is missing.",
+    "DriverApp.js is a single 400-line file with 6 sub-components (Login, Home, Walkaround, Defect, Compliance, Vehicle, Tacho). Readable but nearing the split threshold — consider extracting each screen into pages/driver/screens/*.js as it grows.",
+    "server.py `/api/driver/walkaround` and `/api/driver/defect` correctly force user_id, driver_id/driver_name and vehicle_reg server-side, ignoring any values the driver client sends. Good tenancy isolation ✓",
+    "Driver token has 30-day expiry — reasonable for a driver's on-vehicle device, but consider adding a manager-side 'revoke code' action already exposed as DELETE /api/drivers/{did}/access-code plus a JWT jti/version check if you want immediate revocation (currently only new codes are blocked; already-issued JWTs remain valid until expiry).",
+    "driverApi.js — no 401 interceptor to auto-logout the driver when the token expires; the user will just see empty screens.",
+    "fileUrl() in DriverApp.js embeds the driver token in a query string on <a href>. This works but the token now appears in browser history and any downstream referer headers. Acceptable trade-off (backend accepts ?auth=), but note for security posture."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_driver_app.py"
+  ],
+  "success_rate": {
+    "backend": "94% (16/17 pytest passed; the 1 failure is a real security bug, not a test issue)",
+    "frontend": "100% (login invalid+valid, home, walkaround submit, defect submit, compliance, vehicle, tacho screen; manager side: access-code block, driver-code-value, drv-assigned-vehicle select, Daily Checks visibility, Defects visibility)"
+  },
+  "test_credentials": "Manager: manager@haulcheck.co.uk / Test1234! (JWT via /api/auth/login). Driver: POST /api/drivers/{id}/access-code as manager to obtain a fresh 6-char code, then POST /api/driver/login {code}. Fresh code generated during this run: 5UTZ8U for John Smith (drv_d67872a9c7) — will be invalidated if regenerated.",
+  "seed_data_creation": "Backend suite creates + cleans up its own walkaround/defect. Frontend flow created two visible records on the manager account: (a) walkaround AB12 CDE dated today with 'Defects found' badge + note 'TEST driver mobile - broken mirror'; (b) defect AB12 CDE Major 'TEST driver mobile defect - brake noise' reported by John Smith. Safe to leave or delete via manager UI.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Everything driver-app functional passes. The ONLY blocker is the auth-bypass in _authenticate(): fix by adding `if payload.get('role') == 'driver': return None` (or explicit whitelist) before the user lookup at server.py line 702-707. After the fix, re-run `python -m pytest /app/backend/tests/test_driver_app.py -o addopts=''` and expect 17/17. Driver-token lookup UI selectors used: driver-code-input, driver-login-button, driver-home, driver-tile-{walkaround|defect|compliance|vehicle|tacho}, driver-check-item, driver-item-{ok|fail|note}-{0..23}, driver-submit-walkaround, driver-severity-{minor|major|safety_critical}, driver-defect-description, driver-submit-defect, driver-compliance-item, driver-vehicle, driver-tacho, driver-tacho-upload, driver-back-button, driver-logout-button. Mobile viewport 420x860 works.",
+  "rca of the issue": "Auth-bypass RCA — Repro: (1) manager login → POST /api/drivers/{id}/access-code → get code; (2) POST /api/driver/login {code} → get driver_token; (3) GET /api/vehicles with `Authorization: Bearer <driver_token>` → expected 401/403, actual 200 with full vehicle list. Root cause: server.py `_authenticate()` decodes any HS256 JWT and reads payload['user_id'] to load a user document; driver JWTs happen to store the operator's user_id under that exact key so the same lookup succeeds and returns User(**operator_doc). The `role='driver'` claim is inspected only by get_current_driver, never by _authenticate/get_current_user. Mitigation: in _authenticate, immediately return None (or raise) if payload.get('role') == 'driver'. After the fix, pytest TestSecurity.test_driver_token_rejected_on_manager_endpoint will pass."
+}

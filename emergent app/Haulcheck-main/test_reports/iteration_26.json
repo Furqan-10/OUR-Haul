@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 26 — Verified overdue auto-alerts (dedup + severity + dismiss persistence + auto-clear on renewal), compliance history trend, and email reminder endpoints. 13/13 pytest cases pass at /app/backend/tests/test_iter26_overdue_alerts_and_trend.py (12 fast + 1 long-lifecycle test with two 125s waits to bypass sync throttle, ~4:11 total). Frontend end-to-end verified: Compliance Score Trend recharts LineChart renders with 7 data points (Jul 12-18), reference lines at 60/85, working tooltip; Defect Alerts panel lists 2 overdue items with correct severity badges (MOT=safety_critical, PMI=major); sidebar unread badge shows 2. All endpoints (GET /api/alerts, /api/alerts/unread-count, DELETE /api/alerts/{id}, GET /api/dashboard, GET /api/compliance/history, GET/PUT /api/reminders/settings, POST /api/reminders/send, POST /api/reminders/run-scheduled) return 200 with correct shape.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/compliance/history",
+        "issue": "Historic seed rows (dates 2026-07-12..07-17) contain band='x' rather than one of ('Low Risk','Moderate Risk','High Risk'). Only affects legacy/seeded rows — new snapshots (from today onwards) correctly write proper band names. Frontend doesn't render the band string so no visible impact. Consider a one-off migration if you want the history perfectly consistent."
+      },
+      {
+        "endpoint": "POST /api/reminders/send",
+        "issue": "Resend rejects unverified test domains (e.g. TEST_reminders@example.com) with 'Invalid `to` field'. This surfaces as a 500 with a graceful `detail` (as documented — acceptable for this iteration). Not a code bug; production requires a verified sender domain."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter26_overdue_alerts_and_trend.py",
+    "/app/test_reports/pytest/pytest_iter26_fast.xml",
+    "/app/test_reports/pytest/pytest_iter26_lifecycle.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "sync_overdue_alerts (server.py:1201) uses an in-process dict `_last_overdue_sync` for the 120s throttle — resets on every uvicorn hot-reload and is not shared across replicas. Acceptable for a single-process dev deploy but should move to a Redis/Mongo TTL doc before horizontal scale.",
+    "Dedup keys are stable strings `overdue|{type}|{name}|{item}` (line 1213). Any future rename of `a['name']` (e.g. vehicle registration) will orphan the old key — the stale-delete branch at 1232-1234 handles that correctly by removing keys not in the current overdue set, but the corresponding entry in dismissed_alerts also gets pruned (line 1235-1238: kept_dismissed = dismissed & overdue keys). Verified working via lifecycle test.",
+    "_overdue_severity (server.py:1188) maps MOT/driver Licence/insurance → safety_critical, training/Licence Check/tacho → minor, all others (PMI, Tax, CPC, tacho card, service, etc.) → major. Matches PRD; verified live: AB12 CDE MOT=safety_critical, PMI=major.",
+    "GET /api/compliance/history returns {\"history\": [...]} but the review-request spec says 'returns an array' — the frontend ComplianceTrend.js already reads res.data.history so this is consistent, but if the spec intended a raw array, either update the doc or unwrap on the backend. Both are OK; no user-visible impact.",
+    "DefectAlerts.js returns null when alerts.length===0 (line 27). If both AB12 CDE overdue alerts had been permanently dismissed the panel would be invisible even though the underlying data is still expired — I cleared dismissed_alerts for the manager during testing to restore demo state (the derived 'Compliance Alerts' section below still shows overdue items regardless).",
+    "Frontend ComplianceTrend.js correctly shows a helpful empty-state message when history has 0-1 rows ('trend line appears once we have data from more than one day') — good UX.",
+    "Reminder send/run-scheduled properly convert Resend failures into HTTP 500 with a `Failed to send`/`Failed to run` detail (server.py:3579-3596) — no naked exceptions escape.",
+    "Compliance history upsert key is (user_id, date) — verified idempotent: 3 rapid GET /api/dashboard calls produce exactly 1 row for today."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter26_overdue_alerts_and_trend.py"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 iter26 tests: 3 overdue generation, 2 dedup, 3 compliance history, 4 reminders, 1 long lifecycle covering dismiss+auto-clear)",
+    "frontend": "100% (compliance-trend-card + trend-chart render, DefectAlerts panel with 2 overdue items with correct severity badges, sidebar unread badge=2, registered-users tile=89, risk-score-value=4)"
+  },
+  "test_credentials": "Manager: manager@haulcheck.co.uk / Test1234! (unchanged, JWT via /api/auth/login).",
+  "seed_data_creation": "During the lifecycle test a temp vehicle 'TESTxxxx' was created with expired MOT then updated to future date; auto-deleted in fixture teardown. Test also added recipient 'TEST_reminders@example.com' to db.reminder_settings for the manager — left in place (harmless, Resend rejects it gracefully). Also cleared db.dismissed_alerts.{manager} at end of testing to restore the demo state so the DefectAlerts panel is visible (both MOT and PMI overdue alerts now re-appear on the dashboard).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "sync_overdue_alerts (server.py:1201) has an in-memory 120s throttle keyed by user_id. If you want to force a fresh sync outside the test's 125s waits, restart the backend (`sudo supervisorctl restart backend`) — this resets `_last_overdue_sync = {}`. The manager account has AB12 CDE with mot_due=2026-06-15 (expired) and one PMI schedule overdue; expect these two overdue alerts to be regenerated on any fresh sync unless dismissed. Long lifecycle test takes ~4:11 (two 125s sleeps) — expect the pytest wrapper to appear to hang; use -s to see the sleep progress prints. Run: `python -m pytest /app/backend/tests/test_iter26_overdue_alerts_and_trend.py -v -o addopts='' -s`.",
+  "rca of the issue": "N/A — all features verified working end-to-end. The one confusion during testing was that after my dismiss test finished, /api/alerts returned [] even 130s later. Root cause: main agent's own earlier curl testing had already dismissed AB12 CDE's MOT overdue key, and my test dismissed the PMI one — so BOTH the overdue keys for this manager's only vehicle ended up in db.dismissed_alerts, correctly suppressing recreation. Cleared db.dismissed_alerts.{manager} at end to restore demo state."
+}

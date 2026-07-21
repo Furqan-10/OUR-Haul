@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 19 — Targeted verification of PMI 'Last inspection' per-schedule bug fix on /maintenance > PMI Inspections. Seeded via authenticated fetches from the browser: 3 vehicles (TESTM<ts> with 3 schedules — two freq=0 one-offs and one freq=6 recurring; TESTS<ts> with 1 recurring schedule; TESTN<ts> with 1 recurring schedule but NO record). Recorded 4 inspections via POST /api/pmi/{id}/complete with distinct dates (A=2026-01-10, B=2026-02-15, C=2026-03-20 on TESTM; S=2026-02-20 on TESTS). Backend records confirmed each has correct pmi_id linking (see BACKEND — Records in logs). UI on /maintenance rendered exactly what was expected: the three TESTM cards displayed 2026-01-10, 2026-02-15 and 2026-03-20 as their own 'Last inspection' — no longer sharing the vehicle-global latest. TESTS card showed 2026-02-20. TESTN card showed '—'. Bug fix on frontend/src/pages/Inspections.js lines 108–115 (records.filter(r => r.pmi_id === p.id …).sort().pop()) is CONFIRMED working end-to-end. Cleanup deleted 4 records, 5 schedules, 3 vehicles (all 200 OK). No console errors during the flow (only expected 401s during initial pre-login loads). No changes to app source were required.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Inspections.js:108-115 fix is correct and matches the spec (r.pmi_id === p.id). ✓",
+    "The sort is a plain lexicographic string sort on ISO-format YYYY-MM-DD dates which is safe. ✓",
+    "Records with r.inspection_date falsy are filtered out — safe against partial records. ✓",
+    "Note (pre-existing, low priority, NOT part of this bug): the 'Recent Inspections' list still keys off vehicle_reg only (records.filter((r) => matchesReg(regFilter, r.vehicle_reg))), so it does not group/label per-schedule. Consider adding the schedule notes/inspector next to each record row for clarity if users want to trace a record back to its schedule.",
+    "Pre-existing tech-debt: server.py > 2800 lines, Inspections.js embeds a large record form + brake test panel inside the schedule component. Not part of this fix."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100% (all seed + link checks pass)", "frontend": "100% (3/3 test cases pass)" },
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT)",
+  "seed_data_creation": "All test data created + cleaned within the run: 3 vehicles (TESTM<ts>, TESTS<ts>, TESTN<ts>), 5 PMI schedules, 4 PMI records. All DELETEd at end (all 200 OK). Manager seed data untouched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The PMI per-schedule last-inspection bug is fixed and verified. If revisiting Maintenance/PMI, note that a vehicle can have both freq=0 one-off schedules (next_due = None) and freq=6 recurring schedules simultaneously — the UI supports this correctly. All 3 required test cases (multiple-schedule distinct dates, no-inspection shows —, single-schedule regression) pass on the deployed app.",
+  "rca of the issue": "Original bug (from the code prior to the fix): the 'Last inspection' was computed by matching only on vehicle_reg — so every card of the same vehicle picked the same globally latest date. Fix (already in place at Inspections.js:108-115) narrows the filter to r.pmi_id === p.id, giving each schedule card its own last inspection. Requires the backend to stamp POST /api/pmi/{pid}/complete records with pmi_id — confirmed present (records returned pmi_id=pmi_cbc0f04e04/pmi_328d15c58b/pmi_f6eec5499b/pmi_b43a82c6c8 for the 4 recorded inspections). Reproduction attempted here would fail (i.e. bug is not reproducible) — three distinct dates render across the three same-reg cards, as required."
+}

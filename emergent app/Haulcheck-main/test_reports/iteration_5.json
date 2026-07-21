@@ -1,0 +1,23 @@
+{
+  "summary": "Frontend-only regression on Calendar page after changing event map keys from array index to stable composite keys (`${e.date}-${e.type}-${e.title}-${i}`). Logged in as manager@haulcheck.co.uk, navigated to /calendar, verified month grid renders 35 day cells with event dots, day-detail panel populates correctly, Prev/Next/Today navigation works, and smoke-tested Dashboard/Fleet(Vehicles)/Training/Defects. Zero console errors and zero React unique-key warnings observed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/test_reports/iteration_5.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Calendar.js key strategy is now stable and safe: composite of date+type+title+index avoids collisions when events share the same date/type. The trailing index guarantees uniqueness even if two events share date/type/title, so this is a good pragmatic fix.",
+    "Minor (non-blocking): `api.get('/calendar')` in Calendar.js has no error state / loading state - failures will silently leave events=[]. Not part of this regression, but worth flagging for future robustness."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (not tested this iteration)", "frontend": "100%"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234!",
+  "seed_data_creation": "None. Used pre-existing July 2026 events (1 event on Jul 1, 4 events on Jul 8 - PMI Completed x3 + Defect).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Calendar regression clean after key stabilization. Full feature suite already passed in iteration_4 (backend 35/35). Events for manager account are in July 2026 (visible on Jul 1 and Jul 8). No React key warnings, no console errors on /calendar, /dashboard, /vehicles, /training, /defects. `api.get('/calendar')` has no explicit loading/error UI - candidate for future hardening.",
+  "rca of the issue": "N/A - regression pass only. Key change verified: `${e.date}-${e.type}-${e.title}-${i}` on both day-cell (line 88) and day-detail (line 115) renders without duplicate-key warnings even on Jul 8 which has 4 same-day events."
+}

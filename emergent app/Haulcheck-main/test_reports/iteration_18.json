@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 18 — Team invitations feature (POST/GET/DELETE /api/invitations, GET /api/invitations/verify, POST /api/auth/accept-invite) plus Team page and AcceptInvite page. Backend: 13/14 pytest tests PASS in ~6s (/app/backend/tests/test_iter18_invitations.py, junit /app/test_reports/pytest/pytest_iter18.xml). One failure exposes a real bug: case-sensitive duplicate-email check. Frontend Playwright E2E covered: login → sidebar 'nav-team' → /team → send invite → invite row with copy/revoke → revoke removes row → duplicate email (lowercase exact match) → 'That email already has an account' toast → /accept-invite?token=bogus shows invite-invalid with goto-login-button → /accept-invite with no token shows invite-invalid → valid token flow: accept form (name/password/confirm) → activate → auto-login to /dashboard. Data isolation verified: invitee has 0 vehicles, 0 drivers (inviter's pre-seeded vehicle + driver invisible). Template seed verified: inviter's link cloned into invitee's /api/links.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/invitations",
+        "issue": "Case-sensitive duplicate-email lookup. server.py:690 does `email = data.email.lower().strip()` then `db.users.find_one({'email': email})`, but /api/auth/register (line ~660) stores `email` as-is (no lowercase). So inviting an email that already has an account but was registered with any uppercase letters (e.g. 'Alice@Company.com') slips through as status 200 instead of the required 400. The acceptance criterion `Sending an invite to an email that already has an account returns 400 'That email already has an account'` therefore FAILS for mixed-case emails. Same class of bug likely exists on POST /api/auth/accept-invite line 752. Also POST /api/auth/login uses the raw email as the query key, so mixed-case registrations may be un-loginable. Fix: normalize email to lower().strip() everywhere users are inserted (register, google_session, accept-invite) AND on all lookup paths, plus a one-time backfill lowercasing users.email in Mongo. This is HIGH priority — invitation loop is a security/UX regression.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {"endpoint": "GET /api/invitations/verify", "issue": "Returns 404 for both unknown-token and already-used tokens with the same message 'Invitation not found or already used'. Could split into 404 vs 410 gone for clearer UX but current UI copes."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter18_invitations.py",
+    "/app/test_reports/pytest/pytest_iter18.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH): Normalize `email` to `.lower().strip()` on ALL user-writing paths in server.py — /auth/register (line ~660), /auth/session (google, ~816), /auth/accept-invite (~757). Also normalise on /auth/login lookup (~794) and re-run the duplicate-email test (backend/tests/test_iter18_invitations.py::TestInvitationCreate::test_create_duplicate_email_existing_user_returns_400). Consider a one-off Mongo update: db.users.updateMany({}, [{$set:{email:{$toLower:'$email'}}}]).",
+    "OPTIONAL: also lowercase `AcceptInviteInput.token` handling isn't needed — token comes from secrets.token_urlsafe so case-sensitive is fine."
+  ],
+  "critical_code_review_comments": [
+    "server.py:672-684 _seed_template only clones `links` and `reminder_settings.recipients[0]` (with invitee's own email substituted). Nothing else is cloned — this matches the user's explicit choice ('template clones Links + reminder settings only'). ✓ Isolation confirmed via /api/vehicles + /api/drivers returning [] for the invitee.",
+    "server.py:687-720 create_invitation: token has 32 url-safe bytes (~43 chars) — strong. Response includes invite_link + id but not the token itself; the frontend Team page relies on GET /api/invitations returning `token` (line 725) — verified in tests. The Resend send is wrapped in try/except so silent email failures do not block the flow. ✓",
+    "server.py:690 CASE-SENSITIVITY BUG (see backend_issues.critical).",
+    "server.py:734-741 verify endpoint is unauthenticated by design (invitee has no session yet). ✓ Expiry check uses ISO string comparison — works because both sides are RFC3339 with 'Z'-less offsets. Fine.",
+    "server.py:744-765 accept-invite: password ≥ 6 char validation present; creates user, seeds template, marks invitation accepted atomically-ish (three sequential writes). Race window: two concurrent accept-invite POSTs with the same token could both insert users if the second passes the users.find_one check before the first sets status=accepted. Low-risk in practice; a Mongo unique index on users.email would harden this. Consider `db.users.create_index('email', unique=True)` at startup.",
+    "Team.js:32/57 error handling: on missing token in clipboard.writeText the invite is still saved server-side but toast says 'Could not copy'. Acceptable.",
+    "AcceptInvite.js:24 useEffect dependency `[token]` — token is read once from useSearchParams so effectively runs once. ✓ Passwords match check + min 6 both on client and server. ✓",
+    "Layout.js:18 new nav item added at end of NAV — sidebar order stable. UserPlus icon imported. ✓",
+    "server.py continues to be ~2800 lines — pre-existing tech-debt flag."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter18_invitations.py"
+  ],
+  "success_rate": {"backend": "93% (13/14) — 1 real bug (case-sensitive duplicate email)", "frontend": "100% (all Team + AcceptInvite flows including isolation & template seed)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT). Invitees generated per-run as invitee+<ms>@example.com and invitee2+<ms>@example.com; TEST_dup_<hex>@example.com and TEST_invitee_<hex>@example.com from pytest.",
+  "seed_data_creation": "Test-run seeded then cleaned: (a) pytest test_accept_invite_creates_user_and_seeds_template created 1 link 'TEST InviteLink <hex>', 1 vehicle 'INVTEST<hex>', 1 driver 'TEST InvHiddenDrv <hex>' under manager — deleted in test teardown. (b) UI Playwright run seeded a link 'TEST InviteLink UI <ts>', a vehicle UITEST<4> and a driver 'UI Hidden Drv <ts>' — post-run cleanup script deleted all three (200 OK each). (c) Multiple invitee accounts (invitee2+<ts>@example.com, TEST_invitee_<hex>@example.com etc.) are LEFT BEHIND in the users collection — this is inherent to the flow (no delete-user endpoint exists) and matches previous iterations. Manager seed data untouched.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The invitation feature is FUNCTIONALLY COMPLETE from a UI standpoint — Team page (nav-team, invite-email-input, send-invite-button, invite-row-{id}, copy-invite-{id}, revoke-invite-{id}, no-invites), AcceptInvite page (invite-verifying, invite-invalid, goto-login-button, invite-name-input, invite-password-input, invite-confirm-input, accept-invite-button), template seed of Links, and data isolation ALL WORK. The ONE outstanding backend bug is the case-sensitive duplicate-email check in POST /api/invitations (server.py:690). After the main agent lowercases emails on insert + lookup, re-run `pytest backend/tests/test_iter18_invitations.py::TestInvitationCreate::test_create_duplicate_email_existing_user_returns_400` — should pass. All other 13 tests already pass. If they add a users.email unique index, re-run all 14 to confirm no regression.",
+  "rca of the issue": "RCA of the case-sensitive duplicate check: (1) POST /api/auth/register at server.py:658 inserts `data.email` verbatim (Pydantic EmailStr does NOT lowercase). (2) POST /api/invitations at server.py:689-690 lowercases the input `email = data.email.lower().strip()` then queries `db.users.find_one({'email': email})` — this exact-match lookup misses any stored email that has a different case. Reproduction: register `Alice@Company.com` (returns 200), then invite `alice@company.com` — expected 400, actual 200 (invitation created). Same defect surface: POST /api/auth/accept-invite line 752, POST /api/auth/login line 794. Mitigation: (a) lowercase-normalize `email` in User model or at every write site, (b) add a Mongo unique index on users.email (case-insensitive collation or run a one-off lowercase migration first), (c) update all `db.users.find_one({'email': …})` sites to use the normalised value or a case-insensitive regex. My test used `TEST_dup_<hex>@example.com` (mixed case) to trigger — that's why 13/14 pass but that one fails."
+}

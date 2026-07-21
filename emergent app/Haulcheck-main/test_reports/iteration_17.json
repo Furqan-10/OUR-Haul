@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 17 — Trade Unions feature (Office tab) full E2E verified. Backend: 14/14 pytest tests PASS in 2.9s (/app/backend/tests/test_iter17_trade_unions.py, junit /app/test_reports/pytest/pytest_iter17.xml). Covered: GET/POST/PUT/DELETE /api/trade-unions with data-persistence checks, minimal (only union_name) and full payloads, missing-name rejected (422), no MongoDB _id leakage, id prefix 'tu_', unauthenticated GET/POST rejected (401/403), cross-user isolation (user B cannot see or PUT user A's union — 404), PUT non-existent id → 404. Regression smoke on the other Office endpoints /api/insurance, /api/documents, /api/training, /api/links — all 200 with list bodies. Frontend UI (Playwright, manager@haulcheck.co.uk): logged in via submit-auth-button, Office page loads, all 5 tabs (tab-insurance/documents/training/links/unions) visible. Trade Unions flow: Add Trade Union dialog opens, empty-name submit is blocked (HTML5 required — dialog stays open, no record created), full payload save creates a union-card showing union_name+branch+rep+email+phone+membership+agreement, edit-union-button prefills form and updates rep_name, delete-union-button removes card and shows 'Removed' toast. Regression: clicking Insurance/Documents/Training/Links tabs shows no error elements. All TEST_ prefixed data cleaned up post-run (autouse cleanup fixture + explicit DELETE in test flow). Manager seed data untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/trade-unions/{tid}", "issue": "Silent no-op when id does not exist (returns {ok:true} instead of 404). Consistent with existing pattern for vehicles/tacho deletes noted in iter14–16; not a regression."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter17_trade_unions.py",
+    "/app/test_reports/pytest/pytest_iter17.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:289-315 TradeUnion / TradeUnionInput — mirrors the Link/Document model pattern, id prefix 'tu_', user_id defaults to '' and is overwritten server-side on create; attachments typed as List[Attachment]. ✓",
+    "server.py:998-1021 CRUD endpoints — GET projects out _id, POST returns full model via model_dump(), PUT correctly raises 404 when matched_count==0, DELETE is a silent no-op on missing id (returns {ok:true}). Consider raising 404 for DELETE too for API consistency, though the current UI treats it as fire-and-forget. Not a regression.",
+    "TradeUnions.js:19 load() replaces items on every call — fine; no pagination needed for typical volume.",
+    "TradeUnions.js:25-34 client-side validation: `if (!form.union_name) toast.error(...)` short-circuits save AND HTML `required` on the input blocks native submit — double safety net. ✓",
+    "TradeUnions.js:35 delete() has no confirm() prompt — one-click destructive action. Consistent with LinksPanel; consider a confirm dialog for parity with other destructive flows if UX standard requires it. Minor UX note only.",
+    "Office.js:16-29 defaultValue='insurance', tab-unions is the 5th tab. All 5 tabs render their panels via lazy-safe imports. ✓",
+    "server.py is now ~2790 lines — pre-existing tech-debt flag from prior iters; splitting by resource module would help maintainability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter17_trade_unions.py"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% (all CRUD + validation + regression flows pass)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT). A throwaway TEST_iso_* account is registered by the isolation test.",
+  "seed_data_creation": "During tests all cleaned post-run: pytest created 'TEST_Unite_<hex>' (full payload — created, updated, deleted), 'TEST_MinimalOnly_<hex>' (deleted), 'TEST_iso_A_<hex>' (isolation test — deleted); UI test created 'TEST_UI_Unite' (created, updated, deleted). Autouse cleanup fixture also sweeps any residual TEST_ prefixed unions.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Trade Unions feature is complete and stable. Suite: /app/backend/tests/test_iter17_trade_unions.py — 14 tests, ~3s. Key contracts: (a) POST /api/trade-unions accepts full TradeUnionInput; only union_name is required; empty branch/rep_*/contact_*/membership_number/agreement_ref/notes default to '' and attachments=[]. (b) Response objects use id prefix 'tu_' and NEVER include MongoDB _id. (c) All operations scoped by user_id — user B cannot list/update/delete user A's rows (PUT/DELETE on foreign id → 404/no-op). (d) UI: TradeUnionsPanel is mounted as the 5th tab (data-testid tab-unions) in Office.js. All testids used: add-union-button, save-union-button, edit-union-button, delete-union-button, union-card, union-name/branch/rep-name/rep-role/email/phone/membership/agreement/notes/upload. Validation: HTML5 required on union-name plus a toast.error fallback — dialog stays open on empty submit. Prior iter16 tacho work still passes and was not retested per the request note.",
+  "rca of the issue": "N/A — new feature verification (no bug)."
+}

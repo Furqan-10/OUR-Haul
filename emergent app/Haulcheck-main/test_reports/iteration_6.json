@@ -1,0 +1,31 @@
+{
+  "summary": "End-to-end test of new Insurance section (backend + frontend). Backend: added 4 new pytest cases in TestInsurance class covering CRUD, status computation (valid/due_soon/expired), attachment persistence, dashboard alerts/counts integration, calendar type=insurance events, 404 on unknown id, auth-required, and user isolation. Full backend suite: 39/39 tests pass (1 initial DocumentsTest failure was a transient network timeout and passed on rerun). Frontend: logged in as manager@haulcheck.co.uk, navigated to /insurance via nav-insurance, added a Public Liability policy with certificate upload (PNG), verified card renders with policy_type label, status badge (Valid), 45d days_left, and attachment thumbnail (image loaded via /api/files/{id}?auth=<jwt>). Edit path renamed insurer to 'TEST Insurer UI EDITED' — persisted. Delete removed the card. Dashboard alerts feed shows 'INSURANCE / Aviva / Goods in Transit (GIT) · 12d left / Due Soon' correctly. Calendar Jul 2026 view shows amber 'Insurance renewal ...' on Jul 20 day-cell and 'Insurance Renewal — Goods in Transit (GIT)' with ShieldCheck icon in day-detail panel. Regression smoke passed for Training, Defects, Documents, Drivers pages and logout. Fleet & PMI Inspections nav testids are nav-vehicles and nav-inspections (my script initially used nav-fleet/nav-pmi which are not the actual IDs — the sidebar itself renders and both destinations are reachable, verified in prior iteration 5 too).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["No 'Insurance' KPI stat card is rendered on Dashboard even though backend `counts.insurance` is returned. Only Vehicles/Drivers/PMI Schedules/Documents/Open Defects KPI cards exist. Insurance is only surfaced via the Compliance Alerts feed. Consider adding a `kpi-insurance` card in /app/frontend/src/pages/Dashboard.js (line ~99-103) for parity with other resources."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml", "/app/test_reports/pytest/pytest_insurance.xml"],
+  "action_items": [
+    "(Minor / polish) Add an Insurance KPI card on Dashboard.js — backend `counts.insurance` is already available."
+  ],
+  "critical_code_review_comments": [
+    "Insurance CRUD endpoints correctly scope to `user_id` and exclude `_id` in projections — good.",
+    "PUT /api/insurance/{iid} rightly returns 404 when matched_count==0. DELETE returns ok=true even if no doc matched (silent no-op). This mirrors the existing convention for vehicles/documents in the codebase and is acceptable, but consider returning 404 for consistency with PUT/edit — currently a user could try to delete another user's id and receive ok=true. Data isolation is preserved (nothing is actually deleted), just the response is misleading.",
+    "InsuranceInput.attachments type is `List[Attachment]` (Pydantic) — good, avoids arbitrary payloads. Frontend sends the full attachment shape from /api/upload response so this is consistent.",
+    "gather_stats builds alerts + calendar events from insurance correctly using expiry_date. Calendar events set type='insurance' and title 'Insurance Renewal — {policy_type}'. Frontend Calendar.js TYPE_META has matching 'insurance' entry with ShieldCheck. Confirmed end-to-end.",
+    "Frontend Insurance.js: shadcn Select inside a Dialog works; `ins-type-select` is the trigger. The 'Other' option is silently allowed even though the review lists only 6 official types — non-blocking, offers escape hatch.",
+    "Insurance.js: delete uses no confirm dialog — one click permanently removes a policy. UX-wise a confirmation prompt (like a shadcn AlertDialog) would prevent accidental data loss for regulated data. Vehicles/Documents/Trailers pages appear to share this behavior — flag as consistent design decision, not a bug."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (39/39, incl. 4 new insurance tests)", "frontend": "100% for insurance flow (add, edit, delete, upload, thumbnail, dashboard alerts, calendar)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (seeded)",
+  "seed_data_creation": "During tests: seeded Aviva GIT (2026-07-20, due_soon) already existed. Added and removed a PL policy 'TEST Insurer UI EDITED' with a 70-byte PNG certificate attachment; cleanup performed. Backend TestInsurance also creates+deletes GIT/Motor/EL/GreenCard test policies with TEST_ prefix.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Insurance feature is production-ready end-to-end. Backend suite path: pytest /app/backend/tests/backend_test.py (39 tests, ~72s). Insurance-only run: pytest /app/backend/tests/backend_test.py::TestInsurance (4 tests, ~5s). Attachment URL contract: /api/upload returns { file_id, filename, content_type, url, size }; frontend appends ?auth=<jwt> when using <img src>. Only outstanding polish item is a `kpi-insurance` card on Dashboard (backend already returns counts.insurance).",
+  "rca of the issue": "N/A — no bugs found. Feature works as designed."
+}

@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 27 — Verified PMI Interim inspection endpoint, PMI sheet PDF generation, Routine PMI complete regression, and Training model regression (previous PMIInterimInput / TrainingRecord absorbtion bug). Backend: 9/9 pytest cases pass in /app/backend/tests/test_iter27_pmi_interim_and_sheet.py (Training list+create; Interim create with 67-item checklist keeps PMI schedule count unchanged, missing vehicle_reg → 422, fail result creates pmi_fail alert; Sheet PDF returns %PDF for both interim and routine records + include_files=true works; Routine /complete stamps inspection_type='routine' and advances next_due). Frontend end-to-end verified: on /maintenance PMI Inspections tab, 'Interim Inspection' button opens dialog titled 'Interim Inspection' with required Vehicle selector (data-testid='interim-reg'); submitting without vehicle shows 'Select a vehicle' error toast and dialog stays open; selecting AB12 CDE + submit → POST /api/pmi/interim returned 200, success toast 'Interim inspection recorded', dialog closed, new row appeared in Recent Inspections with 'INTERIM' badge. Sheet buttons: data-testid='download-sheet-button' downloaded PDF (GET /api/pmi/records/{rid}/sheet = 200, content-type application/pdf); History popover's data-testid='history-sheet-button' also downloaded a PDF (200).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter27_pmi_interim_and_sheet.py",
+    "/app/test_reports/pytest/pytest_iter27.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "PMIInterimInput(PMICompleteInput) at server.py:525 correctly extends PMICompleteInput with only vehicle_reg — the accidental TrainingRecord field absorption is gone and Training endpoints continue to work (verified live). Good.",
+    "interim_pmi (server.py:2664) does NOT touch db.pmi_schedules — verified via pytest that GET /api/pmi count is unchanged before/after an interim submission. It stamps inspection_type='interim' and pmi_id=None correctly.",
+    "complete_pmi (server.py:2626) now stamps inspection_type='routine' — regression test passes; next_due advances by frequency_weeks.",
+    "pmi_record_sheet (server.py:2712) uses asyncio.to_thread to avoid blocking the loop while building the PDF, and correctly merges attachment files when include_files=true. Returns application/pdf with Content-Disposition attachment. Good.",
+    "PMI fail path creates pmi_fail alert with severity 'safety_critical' for both routine and interim — matches spec.",
+    "Inspections.js submitComplete (line 76-90) validates interimReg before posting and shows a toast error if missing — verified in UI test.",
+    "Records rows show 'INTERIM' badge only for inspection_type==='interim' (line 199). Sheet button is conditional on r.checklist?.length > 0 (line 206) — appropriate.",
+    "Minor: interim endpoint accepts empty inspection_date silently (Pydantic default '' would pass through). If an operator forgets to set a date the sheet PDF's date field will be blank. Consider validating inspection_date is non-empty. Not a blocker."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter27_pmi_interim_and_sheet.py"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9 tests)",
+    "frontend": "100% (all interim + sheet download flows verified)"
+  },
+  "test_credentials": "Manager: manager@haulcheck.co.uk / Test1234! (unchanged, JWT via /api/auth/login).",
+  "seed_data_creation": "During pytest, test records were created and then cleaned up (all TEST_ prefixed records + pmi_fail alerts deleted). The single interim record created during Playwright UI verification (vehicle AB12 CDE, inspection_date 2026-07-19, no inspector/notes) was also deleted after test. Manager's demo dataset restored to 5 pmi_records (mix of routine + interim). No changes to pmi_schedules.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend tests live at /app/backend/tests/test_iter27_pmi_interim_and_sheet.py — run with `python -m pytest /app/backend/tests/test_iter27_pmi_interim_and_sheet.py -v -o addopts='' --tb=short`. The interim endpoint is POST /api/pmi/interim (body inherits PMICompleteInput + vehicle_reg). Interim records get pmi_id=null and inspection_type='interim'; they do NOT touch db.pmi_schedules. Sheet endpoint is GET /api/pmi/records/{rid}/sheet (?include_files=true optional). Manager has vehicle AB12 CDE (expired MOT + PMI schedule) and one BX20 XYZ (valid PMI). PMI schedule count: 2 (AB12 CDE, BX20 XYZ). PMI records: 5.",
+  "rca of the issue": "N/A — all features verified working end-to-end. The prior bug where PMIInterimInput accidentally absorbed TrainingRecord's fields is fully fixed: PMIInterimInput now cleanly inherits from PMICompleteInput and adds only vehicle_reg; TrainingRecord remains a separate model and GET /api/training + POST /api/training work correctly."
+}

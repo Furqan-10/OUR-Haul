@@ -1,0 +1,17 @@
+User-agent: *
+Allow: /$
+Allow: /login
+Disallow: /dashboard
+Disallow: /fleet
+Disallow: /drivers
+Disallow: /maintenance
+Disallow: /office
+Disallow: /calendar
+Disallow: /reminders
+Disallow: /team
+Disallow: /operator
+Disallow: /tacho
+Disallow: /accept-invite
+Disallow: /api/
+
+Sitemap: https://transport-verify-3.emergent.host/sitemap.xml

@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 23 — Verified the new DVSA HGV Daily Walkaround Checklist end-to-end. Backend: created /app/backend/tests/test_iter23_walkaround_checklist.py (8 tests) covering login, POST /api/walkarounds with a 24-item checklist (nil-defect + defects-found), GET /api/walkarounds returning the persisted checklist array (structure {section,item,ok,note}, 9 Internal + 15 External), PUT /api/walkarounds/{id}/rectify, GET /api/reports/walkaround (200 application/pdf with %PDF magic bytes), and GET /api/reports/walkaround?format=json confirming the new 'Checks' column with 'passed/total' values — 8/8 passed. Frontend: (a) Log Daily Check dialog titled 'HGV Daily Walkaround Check' renders data-testid='walk-checklist' with exactly 24 walk-check-item rows grouped under 'INTERNAL CHECKS' (9) + 'EXTERNAL CHECKS' (15), all defaulting to Pass (green tick). (b) NIL-DEFECT flow: selected AB12 CDE, clicked Log Check — new card shows 'NIL DEFECT' badge and walkaround-check-count '24/24 checks passed'. (c) DEFECTS flow: selected BX20 XYZ, clicked walk-item-fail-0 + walk-item-fail-10, typed notes 'Cracked mirror' + 'Oil leak observed', saved — new card shows 'DEFECTS FOUND' badge, defects_noted 'Mirrors and glass: Cracked mirror; Fuel/oil leaks: Oil leak observed', '22/24 checks passed', and Mark rectified button. (d) 'Mark all OK' shortcut correctly resets 2 defect items back to Pass (note inputs disappear, dialog badge flips back to 'Nil defect'). (e) Regression: Mark rectified opens rectify dialog, saves 'Replaced mirror + resealed sump', card gets 'RECTIFIED' badge + green banner 'Rectified 2026-07-18 — Replaced mirror + resealed sump', and the mark-walkaround-rectified-button is removed. (f) Download PDF dropdown → 'Report (summary)' → downloads daily-checks-report.pdf successfully. No console errors relevant to functionality. Note: 'walk-item-fail-10' toggles 'Fuel/oil leaks' (the 2nd External item, flat index 10) — the agent context note said 'index 9 = Lights and indicators (first external), etc.' so index 10 is Fuel/oil leaks, matching the assertion.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter23_walkaround_checklist.py",
+    "/app/test_reports/pytest/pytest_iter23.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Walkaround.js — CHECKLIST const is defined at module top with 24 canonical DVSA items (9 Internal + 15 External); buildChecklist() correctly flattens with default ok:true. Save handler derives result='defects_found' iff any item failed and compiles a 'Item: note; Item: note' defects_noted string joined with any Additional-notes textarea via ' — '. Clean and idempotent. ✓",
+    "The auto-derived defects_noted is prepended to the user's Additional-notes textarea. In the current UI the textarea is initially empty, but if a user types in both places the final saved string is 'auto — manual', which is fine. Non-blocking.",
+    "reports.py::walkaround_report — the new 'Checks' column shows 'X/Y' when a checklist exists and '—' otherwise, which preserves backward compatibility for any legacy records saved before the checklist array existed. ✓",
+    "Backend WalkaroundInput uses List[dict] for checklist (no Pydantic model). Acceptable for MVP, but a WalkaroundChecklistItem model with section/item/ok/note would give validation + docs. Non-blocking.",
+    "React dev overlay: The app occasionally shows a React dev 'Uncaught runtime errors: ResizeObserver loop completed with undelivered notifications' after opening Radix Select inside the Walkaround dialog. This is a known benign warning that react-error-overlay treats as an error, and does NOT affect functionality (Cypress/Radix well-known noise). Only visible in dev mode. Recommend swallowing this specific ResizeObserver message via a window.addEventListener('error', ...) handler in index.js to reduce noise. Non-blocking.",
+    "server.py is 3462 lines — pre-existing tech debt, unchanged. ✓"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter23_walkaround_checklist.py"
+  ],
+  "success_rate": {"backend": "100% (8/8 pytest passed)", "frontend": "100% (dialog structure, nil-defect flow, defects flow, Mark all OK shortcut, Mark rectified regression, Download PDF - Report summary)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT via /api/auth/login)",
+  "seed_data_creation": "Frontend testing created walkaround checks for AB12 CDE (nil-defect, 24/24) and BX20 XYZ (defects-found → rectified) which remain in the manager's account. Backend pytest suite cleans up after itself via test_cleanup. Ok to leave FE data or delete if next agent needs a clean slate.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The DVSA checklist has 24 flat items with these indices: 0-8 Internal (0 Mirrors and glass, 1 Wipers, 2 Front view, 3 Warning lamps, 4 Steering, 5 Horn, 6 Brakes/air, 7 Height marker, 8 Seatbelts), 9-23 External (9 Lights and indicators, 10 Fuel/oil leaks, 11 Battery, 12 AdBlue, 13 Exhaust smoke, 14 Body/wings, 15 Spray suppression, 16 Tyres and wheel fixing, 17 Brake line, 18 Electrical connections, 19 Coupling security, 20 Security of load, 21 Number plate, 22 Reflectors and lights, 23 Markers). data-testid pattern is walk-item-{ok|fail}-{idx} and walk-item-note-{idx}. The dialog also has walk-all-pass, walk-reg (Radix Select), walk-driver (Radix Select), walk-date, walk-mileage, walk-notes, save-walkaround-button. Cards expose walkaround-card, walkaround-check-count, mark-walkaround-rectified-button, walkaround-rectified-banner, delete-walkaround-button. The report dropdown data-testid='download-walkaround-pdf' opens a menu with 'Report (summary)' and 'Report + evidence files' menuitems. A benign React dev error overlay ('ResizeObserver loop') can appear after opening Radix Select inside a Dialog; dismiss it in playwright by removing body>div with matching innerText before subsequent clicks.",
+  "rca of the issue": "No bugs encountered. All 6 requested test scenarios verified successfully on both backend and frontend."
+}

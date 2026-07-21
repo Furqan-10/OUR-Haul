@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 25 — Verified (a) driver auth-bypass CRITICAL fix from iter24 and (b) new DVSA PMI 67-point checklist + rectified_by feature. Backend: existing driver-app suite now 17/17 pytest passes (previously 16/17 with the auth-bypass failing). New /app/backend/tests/test_iter25_pmi_checklist.py adds 8 tests (5 auth-regression + 3 PMI checklist/PDF) — all 8 pass. Frontend: full end-to-end PMI flow verified in browser at production URL. The Record Inspection dialog renders exactly 67 pmi-check-item rows across sections A/B/C, complete-rectified-by field is present, per-item dropdowns default to '✓ Serviceable' and switching to '✗ Defect' reveals pmi-item-note-{idx}. Submitted with 2 defects (idx 0 & 3) + rectified_by='J. Workshop' + inspection_date=2026-01-15; got success toast 'Inspection recorded · next due updated'; History popover shows the new row with FAIL badge (auto-derived even though Result was left on Pass), 'Rectified by: J. Workshop', and '65/67 items serviceable'. 'Mark all ✓' shortcut correctly resets a previously-defected item back to Serviceable. PDF export tested via backend (200 application/pdf, %PDF magic bytes, includes Rectified by + Defects columns per reports.py:228).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/driver/login",
+        "issue": "Carried over from iter24: access-code lookup is case-sensitive on the backend (works only because the frontend upper-cases before submit). Not blocking."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter25_pmi_checklist.py",
+    "/app/backend/tests/test_driver_app.py",
+    "/app/test_reports/pytest/pytest_iter25_pmi.xml",
+    "/app/test_reports/pytest/pytest_iter25_driver.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Auth-bypass fix at server.py:707 (`if payload.get('role') == 'driver': return None` inside _authenticate) is minimal and correct — the manager path now explicitly rejects driver JWTs; driver path (get_current_driver, line 679) still whitelists role=='driver'. Verified by regression suite.",
+    "PMICompleteInput (server.py:495-507) now includes `rectified_by: str = \"\"` and `checklist: List[dict] = []`. complete_pmi endpoint (2474-2502) persists both fields on the record document (2487, 2494). GET /api/pmi/records returns them — verified.",
+    "reports.py pmi_history_report (205-230) now includes 'Rectified by' + 'Defects' columns and computes defect count from checklist. Verified PDF returns 200/application/pdf with valid %PDF header.",
+    "Frontend Inspections.js keeps everything (PMI_CHECKLIST const with 67 items = 22+42+3, buildPmiChecklist, submitComplete auto-fail derivation, history popover) in a single ~315-line module — still readable but growing; consider splitting the checklist constant into a data file if you keep adding sections.",
+    "submitComplete auto-derives `result='fail'` when defects exist AND user-selected result was 'pass' (Inspections.js:76). Correct behaviour matches PRD ('unless already advisory/fail'). Verified UI: initial result=pass + 2 defects -> stored as FAIL.",
+    "Minor: PMI_CHECKLIST items use plain strings; if two sections ever share an item name the flat idx approach still works, but consider storing a stable key rather than relying on order for future edits."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter25_pmi_checklist.py"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 driver auth suite + 8/8 iter25 PMI suite = 25/25)",
+    "frontend": "100% (67-item checklist render, defect dropdowns, rectified_by, submit + toast, history popover with rectified_by + '65/67 items serviceable', auto-FAIL derivation, 'Mark all ✓' reset)"
+  },
+  "test_credentials": "Manager: manager@haulcheck.co.uk / Test1234! (JWT via /api/auth/login). Driver access code re-generated during test via POST /api/drivers/{id}/access-code (new codes invalidate the previous ones).",
+  "seed_data_creation": "One UI-created PMI record on AB12 CDE (2026-01-15, FAIL, rectified_by 'J. Workshop', 2 defects) was created during frontend test then DELETED via DELETE /api/pmi/records/pmr_dc158d51ab. Backend suite creates its own TEST schedule + records with autouse cleanup. Test PMI schedule created for AB12 CDE ('TEST' inspector/notes, next_due 2026-06-01) is cleaned up in the fixture teardown. Manager account is left clean.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both features from this iteration (driver auth-bypass fix + DVSA PMI 67-point checklist w/ rectified_by) are fully working end-to-end. Regression suites live at /app/backend/tests/test_driver_app.py (17 tests) and /app/backend/tests/test_iter25_pmi_checklist.py (8 tests). Run with: `REACT_APP_BACKEND_URL=... python -m pytest backend/tests/test_driver_app.py backend/tests/test_iter25_pmi_checklist.py -o addopts=''`. Frontend selectors verified: complete-pmi-button, pmi-checklist, pmi-check-item (67 rows), pmi-item-select-{0..66}, pmi-item-note-{idx}, complete-rectified-by, pmi-all-serviceable, submit-complete-button, pmi-history-button, pmi-history-popover, pmi-history-pdf-button. The '✗ Defect' option label uses the exact unicode ✗ char — playwright locator 'option:has-text(\"Defect\")' works reliably.",
+  "rca of the issue": "N/A — both items were verifications, not bug hunts. The iter24 auth-bypass RCA (missing role check in _authenticate) was correctly fixed at server.py:707."
+}

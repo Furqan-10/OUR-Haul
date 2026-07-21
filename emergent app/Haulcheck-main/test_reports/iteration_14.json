@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 14 — verified (1) walkaround defect RECTIFY flow and (2) multi-tenancy data isolation for HaulCheck. Both PASS end-to-end. Backend: added /app/backend/tests/test_iter14_features.py (11 tests) — all 11/11 PASSED in 4.77s (junit: /app/test_reports/pytest/pytest_iter14.xml). Tests cover: PUT /api/walkarounds/{id}/rectify persists rectified=true + rectified_date + rectified_notes; date defaults to today when null; 404 on unknown id; 401/403 without auth; nil-defect walkaround has rectified=false; new user sees empty [] for ALL 16 list endpoints (/vehicles /trailers /drivers /documents /insurance /training /defects /pmi /pmi/records /wheel-audits /service-records /walkarounds /test-history /fuel /tacho /links); new user's /calendar returns 0 events; new user's /dashboard shows 0 vehicles/drivers/trailers; new user creates a vehicle and manager does NOT see it (and manager DELETE against another tenant's vehicle id is a silent no-op that does NOT touch the target row); manager regression /dashboard still returns fine; maintenance tab list endpoints all load. Frontend E2E (Playwright, real prod URL, viewport 1920x1080): (a) Walkaround rectify UI: logged in as manager@haulcheck.co.uk → /maintenance → Daily Checks tab (tab-walkaround) → Log Daily Check (add-walkaround-button) → picked vehicle AB12 CDE via Radix Select walk-reg, picked driver via walk-driver, Result='Defects found' via walk-result Radix option, defects_noted via walk-notes, saved (save-walkaround-button). Card count went 1→2 with new card showing amber 'DEFECTS FOUND' badge AND a 'Mark rectified' button (mark-walkaround-rectified-button). Clicked it → rectify dialog opened → filled walk-rectify-date=2026-01-09 and walk-rectify-notes='TEST_UI replaced brake light bulb' → confirmed (save-walk-rectify-button). Verified: green 'RECTIFIED' badge appears next to 'DEFECTS FOUND', green walkaround-rectified-banner shows 'Rectified 2026-01-09 — TEST_UI replaced brake light bulb', and the mark-walkaround-rectified-button is GONE for that card (count dropped 2→1 while the other unrectified-defect card still has its button). Toast 'Defect marked as rectified' displayed. (b) Multi-tenancy UI: registered a fresh user iso_ui_5314948c@haulcheck.co.uk via POST /api/auth/register, logged in, verified /vehicles /drivers /maintenance (all 5 tabs pmi/defects/walkaround/service/wheel) /documents /calendar all show ZERO cards (0 vehicles, 0 drivers, 0 pmi/defect/walkaround/service/wheel cards, 0 office cards, 580-char calendar page with no events). New user POSTed vehicle 'ISO-UI-AEE1C' — page reload shows it in their Fleet. Signed out, logged in as manager, went to /vehicles: 'ISO-UI-AEE1C' is NOT present (manager still sees only their own AB12 CDE). ISOLATION HOLDS. All TEST_ seed data cleaned (both API + Mongo directly): 2 iso test users deleted, 1 leftover TEST walkaround from iteration_12 removed. No residual TEST data.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/walkarounds/{wid}/rectify", "issue": "No ISO date validation — accepts any string in rectified_date field. Also no way to UN-rectify (mark as unrectified again) if applied by mistake. Minor UX gap."},
+      {"endpoint": "DELETE /api/vehicles/{vid} (and similar DELETE endpoints)", "issue": "Returns {ok:true} even when the id belongs to another tenant or doesn't exist — silent no-op. Correct behavior for tenant isolation (does NOT delete cross-tenant), but the 200 response could mislead the caller. Consider 404 when scoped filter matches 0 docs to make the API more expressive. Not a security issue."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Multiple dialogs (Log Daily Walkaround Check, Mark defect rectified)", "issues": ["Console warns: 'Missing Description or aria-describedby={undefined} for DialogContent' — pre-existing a11y warning also flagged in iteration_12. Cosmetic only, not blocking."]},
+      {"screen": "Maintenance page > Daily Checks tab", "issues": ["'Log Daily Check' button at top-right renders as plain black text with no visible button background/border (appears as a floating label). Screenshot shows the button label positioned at the top without shadcn Button styling wrapping it visually. Users may not identify it as clickable. Investigate the Button className / wrapping div — data-testid=add-walkaround-button is present and clickable but the styling seems flattened."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter14_features.py",
+    "/app/test_reports/pytest/pytest_iter14.xml"
+  ],
+  "action_items": [
+    "Investigate 'Log Daily Check' button styling on /maintenance > Daily Checks — appears as unstyled black text label instead of a filled black button (see screenshot). Cosmetic — button IS clickable via testid.",
+    "(Optional/low) Add ISO date validation to /walkarounds/{wid}/rectify and consider an 'un-rectify' endpoint.",
+    "(Optional/low) Add <DialogDescription> or aria-describedby to Radix DialogContent in Walkaround.js and other dialogs to remove a11y console warnings (pre-existing since iter 12)."
+  ],
+  "critical_code_review_comments": [
+    "server.py 1786-1794 PUT /walkarounds/{wid}/rectify: correctly scoped by {'id':wid,'user_id':user.user_id}. If matched_count==0 returns 404 — good. Uses now_iso()[:10] fallback when rectified_date is empty/None — good.",
+    "server.py 608-625 register: creates a fresh user record and JWT — NO seed data written for new accounts, confirming multi-tenancy foundation.",
+    "server.py: every list/CRUD endpoint uses {'user_id': user.user_id} filter (verified for all 16 endpoints tested). DELETE endpoints do NOT check matched_count — silent no-op is safe but suboptimal for API expressiveness.",
+    "Walkaround.js line 64: badge only renders when a.result === 'defects_found' AND a.rectified — correct, nil-defect walkarounds do not get a rectify UI.",
+    "Walkaround.js line 76-77: mark-walkaround-rectified-button only renders for defects_found AND !a.rectified — verified UI hides button after saving.",
+    "Walkaround.js line 71-75: walkaround-rectified-banner shows date + notes, gracefully omits ' — notes' when empty.",
+    "server.py file is ~2730 lines — still recommend router-per-resource split (flagged in iter 12 & 13). Growing tech debt but not blocking."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter14_features.py"],
+  "success_rate": {"backend": "100% (11/11 iter14 tests)", "frontend": "100% (walkaround rectify UI flow + multi-tenancy UI isolation both fully verified end-to-end)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (existing). New user registered during test: iso_ui_5314948c@haulcheck.co.uk / Test1234! — cleaned up post-test.",
+  "seed_data_creation": "During tests (all cleaned): 3 TEST walkarounds via API for rectify tests, 1 TEST_UI walkaround via UI (deleted), 1 nil-defect walkaround, 1 ISO-UI-AEE1C vehicle for new user, 2 isolation_test/iso_ui users registered (both users removed from MongoDB post-test). Also removed a leftover 'TEST NSF tyre pressure low' walkaround from iteration_12 that had never been cleaned. No TEST_ data remaining in DB.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 14 confirmed: (a) WalkaroundCheck now has rectified/rectified_date/rectified_notes fields (server.py ~510-528). PUT /api/walkarounds/{id}/rectify sets rectified=true, defaults date to today if empty. Frontend Walkaround.js conditionally renders 'Mark rectified' button (only for defects_found + !rectified) and rectified banner (only when both flags true). Nil-defect checks have no rectify UI. (b) Multi-tenancy is architecturally enforced: POST /auth/register creates a FRESH empty user (no seeded data), and every list/CRUD endpoint filters by {'user_id': user.user_id}. Manager and new user cannot see each other's data. DELETE endpoints on all resources silently no-op when target belongs to another tenant (returns 200 with {ok:true} but does not delete). Radix Select in dialogs — click trigger then click [role=option]. Minor cosmetic: 'Log Daily Check' button styling appears flattened (report as design issue). Test file /app/backend/tests/test_iter14_features.py can be reused.",
+  "rca of the issue": "No bugs found. Both requested items (walkaround rectify flow, multi-tenancy) are correctly implemented and verified. Only cosmetic issue observed: the 'Log Daily Check' add-walkaround-button appears without visible button styling on the Maintenance > Daily Checks tab — possibly a class-name / Button component issue. Button is still clickable via testid and functionality works end-to-end."
+}

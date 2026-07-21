@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 20 — Verified the new 'Vehicle type' dropdown + all Download PDF endpoints for HaulCheck. Backend pytest (15/15 passed) covered POST/PUT/GET /api/vehicles with `type`, GET /api/reports/{vehicles,trailers,drivers,defects,service,wheel,walkaround,pmi} (each 200 + application/pdf + %PDF magic + >500 bytes), unknown-kind → 404, unauth → 401, GET /api/pmi/{pid}/report (200 PDF) and /api/pmi/<bogus>/report → 404. Playwright covered the full Vehicles CRUD with the new type field (LGV/Van create → row shows '(LGV / Van)'; edit → 'Car'; delete cleanup) and each of the eight Download PDF buttons across /vehicles (Vehicles & Trailers tabs), /drivers, /maintenance (PMI, Daily Checks, Defects, Service, Wheel), plus the per-schedule PMI history 'PDF' button — every network call observed returned 200 application/pdf. Vehicle type dropdown lists all six required options in the correct order; no missing/extra options. No console errors during the flow. Existing manager seed data (AB12 CDE, BX20 XYZ) untouched.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter20_reports.py",
+    "/app/test_reports/pytest/pytest_iter20.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "reports.py builders are cleanly separated; _REPORT_BUILDERS dispatch is DRY and easy to extend. ✓",
+    "Backend /api/reports/{kind} uses asyncio.to_thread(build_report_pdf, ...) — good, keeps the event loop unblocked for PDF rendering. ✓",
+    "downloadPdf(url, filename) uses api.get with responseType 'blob' and reads Content-Disposition fallback — correct pattern; toast on error is user-friendly. ✓",
+    "Legacy data note (NOT a bug, but a minor migration risk for main agent): the two seeded manager vehicles have type='HGV' which is NOT one of the six new dropdown options (HGV (Rigid) / HGV (Artic / Tractor Unit) / …). Opening 'Edit' on one of those rows leaves the Select's value as the legacy 'HGV' string — the trigger will render 'HGV' but no option is visually selected in the list. Consider a one-time migration mapping 'HGV' → 'HGV (Rigid)' or accepting the legacy value in VEHICLE_TYPES.",
+    "server.py is now 3261 lines — pre-existing tech-debt flagged in prior iterations; consider splitting per-domain routers (reports, pmi, fleet, etc.).",
+    "reports.py::audit_pack references data.get('pmi_records') which is only populated when 'pmi' is in kinds — OK today because audit spec includes 'pmi', but a future caller re-using audit_pack directly could hit a KeyError if pmi_records isn't fetched. Consider defensive .get('pmi_records', []) — minor."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter20_reports.py"],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% (8/8 PDF buttons + vehicle-type CRUD)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT)",
+  "seed_data_creation": "One temporary vehicle 'TESTZ42 ABC' created via UI to verify create/update/delete of the new `type` field; cleaned up in the same run. Backend pytest also creates/updates/deletes a TEST_-prefixed vehicle. Manager seed vehicles (AB12 CDE, BX20 XYZ) not modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 8 report endpoints + per-schedule PMI history endpoint verified working end-to-end (backend + browser). VEHICLE_TYPES dropdown fully wired (Vehicles.js:19-20, 127-132). Fleet page route is /vehicles (sidebar label 'Fleet' → /vehicles). Manager account has 2 vehicles + at least 1 PMI schedule with history (pmi_50bb021a19 observed). One legacy-data observation only: existing vehicles have type='HGV' which isn't in the new dropdown — not a blocker but worth a data migration when convenient.",
+  "rca of the issue": "No bug to reproduce this iteration. Every requested behaviour verified positive: dropdown enumerates the six required options in order, create/edit persists the chosen type into the vehicle row, and all report download endpoints (/api/reports/{kind} and /api/pmi/{pid}/report) return HTTP 200 with content-type application/pdf and valid %PDF payloads."
+}

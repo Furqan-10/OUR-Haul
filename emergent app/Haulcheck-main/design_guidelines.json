@@ -1,0 +1,124 @@
+{
+  "theme": "light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": "Objective, rigid, and functional. Prioritize data clarity, high contrast, and traffic-light system for compliance status (Green/Amber/Red). Eliminate cognitive load by relying heavily on hierarchy and spacing.",
+  "typography": {
+    "headings": {
+      "font_family": "Chivo",
+      "weights": ["400", "700", "900"],
+      "usage": "Use tight letter spacing (tracking-tight) for large text. Sharp, mechanical, and authoritative."
+    },
+    "body": {
+      "font_family": "IBM Plex Sans",
+      "weights": ["400", "500", "600"],
+      "usage": "Used for data tables, metrics, and standard reading text. Highly legible at small sizes."
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl tracking-tight font-black",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl font-bold",
+      "h4": "text-lg sm:text-xl font-semibold",
+      "body": "text-sm sm:text-base text-slate-700",
+      "small_labels": "text-xs uppercase tracking-[0.2em] text-slate-500 font-semibold"
+    }
+  },
+  "colors": {
+    "background": {
+      "primary": "#FFFFFF",
+      "secondary": "#F8FAFC",
+      "tertiary": "#F1F5F9"
+    },
+    "text": {
+      "primary": "#0F172A",
+      "secondary": "#475569",
+      "tertiary": "#64748B",
+      "inverse": "#FFFFFF"
+    },
+    "status": {
+      "success": "#16A34A",
+      "success_bg": "#DCFCE7",
+      "warning": "#EAB308",
+      "warning_bg": "#FEF9C3",
+      "danger": "#DC2626",
+      "danger_bg": "#FEE2E2",
+      "info": "#3B82F6",
+      "info_bg": "#DBEAFE"
+    },
+    "primary": {
+      "default": "#000000",
+      "hover": "#333333",
+      "foreground": "#FFFFFF"
+    },
+    "border": "#E2E8F0"
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous Spacing Philosophy. Utilize the 'Control Room' Grid for dashboards.",
+    "dashboard_grid": {
+      "base": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6",
+      "summary_widget": "col-span-1",
+      "main_chart": "col-span-1 md:col-span-2 lg:col-span-3",
+      "list_feed": "col-span-1 row-span-2"
+    },
+    "padding": {
+      "container": "p-6 sm:p-8 md:p-12",
+      "card": "p-5 sm:p-6"
+    }
+  },
+  "components": {
+    "cards": {
+      "style": "Flat solid surfaces with a 1px subtle border (border-slate-200), no shadow by default. Sharp or slightly rounded edges (rounded-md).",
+      "hover_state": "Slight lift (-translate-y-1), subtle ambient shadow (shadow-sm), border color darkens to slate-300."
+    },
+    "buttons": {
+      "style": "High contrast. Primary buttons are solid black with white text. Use robust padding (px-6 py-2.5) and slight radius (rounded-md).",
+      "interaction": "Clear hover state with background lightening. Must include focus ring (focus:ring-2 focus:ring-offset-2 focus:ring-black)."
+    },
+    "tables": {
+      "style": "Clean data presentation. Sticky headers with subtle background (bg-slate-50). Zebra striping optional but keep borders minimal (border-b border-slate-200 only). Include clear traffic-light status badges."
+    },
+    "badges": {
+      "style": "Small, rounded-full, distinct background tints with matching strong text color for statuses (e.g., bg-red-100 text-red-700)."
+    },
+    "navigation": {
+      "style": "Sidebar or top nav with Solid Background (bg-white or bg-slate-900 if inversion is desired for contrast). Never use transparent backgrounds. Clearly denote active states with a bold indicator (e.g., left border)."
+    }
+  },
+  "motion": {
+    "hover": "transition-all duration-200 ease-in-out",
+    "page_load": "staggered fade-in and slide-up (translate-y-4 to 0, opacity 0 to 1) for dashboard widgets.",
+    "accessibility": "Respect prefers-reduced-motion."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "Sharp, clean, and stroke-based. Size 20px for general use, 16px for inline data."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1766561993607-58d30bf6b86f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njd8MHwxfHNlYXJjaHwxfHx0cnVjayUyMGxvZ2lzdGljcyUyMGxvZ298ZW58MHx8fHwxNzgzMzIxNDI0fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Orange logistics truck driving on highway",
+        "category": "branding_background",
+        "usage": "Can be used as a subtle background for the login page, heavily overlaid with white or black (opacity 0.8) to maintain text legibility."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1560250097-0b93528c311a",
+        "description": "Professional fleet manager portrait",
+        "category": "user_avatar",
+        "usage": "Use as a placeholder for the logged-in Fleet Manager user profile avatar in the header."
+      }
+    ]
+  },
+  "testing": {
+    "attributes": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., data-testid='login-submit-button', data-testid='defect-report-card')."
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the color palette provided, prioritizing the traffic-light status system for compliance items.",
+    "Use Chivo for all headings and IBM Plex Sans for body and data.",
+    "Implement Shadcn UI for complex components like data tables, select dropdowns, and date pickers.",
+    "Ensure the dashboard uses the 'Control Room' grid layout for dense data correlation.",
+    "The UI must be responsive, defaulting to a single-column stacked view on mobile devices (crucial for drivers reporting defects).",
+    "Add data-testid attributes to all buttons, links, form inputs, and key widgets.",
+    "Ensure high contrast ratios (minimum 4.5:1) for all text and data points.",
+    "Do not use generic font families like Inter or Roboto for headings."
+  ]
+}

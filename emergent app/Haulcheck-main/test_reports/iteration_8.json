@@ -1,0 +1,42 @@
+{
+  "summary": "End-to-end test of the new Tacho Portal feature. Backend: added a new TestTacho pytest class (7 tests) covering CRUD, computed next_due, /tacho/{id}/download log action advancing next_due, dashboard counts['tacho'] + alerts (type='tacho'), calendar events (type='tacho'), auth requirements, cross-user isolation. All 7 new tests pass; full suite 53 tests pass (2 transient network timeouts on first parallel run recovered cleanly on serial retry — same behavior noted in iteration_7). Frontend Playwright: logged in as manager@haulcheck.co.uk, ensured region=UK, navigated to /tacho via nav-tacho — seeded John Smith Driver Card record renders with next_due 2026-08-05 (today+28) and Due Soon badge. Opened add-tacho-button dialog: default frequency = 28 (Driver Card). Selected Vehicle Unit in tacho-type-select — frequency auto-updated to 90. Filled tacho-reference/tacho-last (today-10d)/tacho-infringements=2, clicked save-tacho-button; new tacho-card appeared showing 'Vehicle Unit', 'Every 90 days', '2 infringements logged', next_due=today+80 (2026-09-26), Valid badge. Clicked log-download-button (scoped via has-text locator): card refreshed with next_due=today+90 (2026-10-06). Edited reference via edit-tacho-button + save; verified persistence. Deleted via delete-tacho-button; card removed. Dashboard mentions Tacho (KPI/alerts) and Calendar mentions Tacho. Regression smoke passed for all nav items (nav-dashboard/nav-calendar/nav-inspections/nav-vehicles/nav-drivers/nav-training/nav-defects/nav-documents/nav-insurance/nav-tacho). Vehicles page shows both Vehicles + Trailers tabs. Insurance page still exposes ai-import-button. Logout via logout-button returns to /login. Test data cleaned up (leftover TEST_UI_AB12 CDE removed via API); only seeded John Smith remains.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_tacho.xml",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Consider suppressing the benign 'ResizeObserver loop completed with undelivered notifications' warning that triggers the CRA react-error-overlay in dev mode. It briefly blanket-covers the UI and hijacks clicks during automated tests (had to inject CSS + press Escape to bypass). In a production build the overlay is disabled so end users are unaffected — but it does interrupt Playwright automation and can flash for real users if the preview is served in dev mode. Suggested fix: window.addEventListener('error', e => { if (e.message.includes('ResizeObserver loop')) e.stopImmediatePropagation(); }) in index.js, OR upgrade react-error-overlay / add a global error handler in _internal_utils.",
+    "Non-blocking: /api/tacho PUT accepts a raw update but keeps existing attachments only if the client re-sends them; the Tacho.js openEdit spreads existing attachments so this is fine, but future consumers should be aware."
+  ],
+  "critical_code_review_comments": [
+    "server.py compute_next_due (line 824-829): uses datetime.fromisoformat(base) where base can be `last_download` (YYYY-MM-DD) or now_iso() (full ISO with time). fromisoformat handles both in Python 3.11 — good. However, if a client posts last_download='' (empty string), TachoInput coerces via Optional[str] but the frontend sends `null` on empty — verified. Edge case: a client sending 'invalid-date' would return next_due=None silently (except catches ValueError). Consider returning 400 for invalid dates so users see the error instead of a missing next_due badge.",
+    "server.py DELETE /api/tacho/{tid} (line 875) does not raise 404 when the record does not exist for the user — returns {ok:true} unconditionally. This is inconsistent with other endpoints (PUT returns 404 correctly). Minor.",
+    "server.py POST /api/tacho/{id}/download (line 860) accepts a raw dict body rather than a Pydantic model. Consider a `TachoDownloadInput(BaseModel)` with `download_date: Optional[str]`, `attachment: Optional[Attachment]` for clearer API docs and validation.",
+    "server.py list_tacho sort by 'next_due' (line 834) — records with next_due=None will sort first in ascending which is acceptable but not documented. Fine.",
+    "gather_stats (line 1135-1143): tacho alerts only include name+item+status+days — no `id` field, so the dashboard alerts feed cannot deep-link to the tacho record. Other alert types (vehicles/drivers/insurance/pmi) also don't consistently include ids, but if deep-linking is a future goal, add tc['id'] here.",
+    "Frontend Tacho.js line 30 (setType): when switching source type after having manually set the frequency, the manual value is overwritten by FREQ[v]. This is the intended behavior per the spec ('selecting the type auto-sets frequency') and matches the tests — noted, no action needed.",
+    "Frontend Tacho.js delete-tacho-button (line 69): single-click delete with no confirmation dialog. For regulated compliance data, an AlertDialog confirm would be safer. Consistent with other list pages (documented in iteration_7 review).",
+    "Frontend Tacho.js: no loading/empty state on `logDownload` action while the POST is in-flight; a rapid double click could fire two POSTs. Minor.",
+    "Frontend Tacho.js today() helper (line 15) uses ISOString().slice(0,10) which is UTC — for a user in a different timezone near midnight, 'today' might be off-by-one from their local calendar. Minor.",
+    "Calendar.js TYPE_META entry for tacho (Gauge icon, 'Tacho Download' label) — verified.",
+    "Layout.js nav-tacho positioned in nav array — appears correctly in sidebar with Gauge icon."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {
+    "backend": "100% (53/53 tests; 2 network-timeout flakes on first parallel run passed on retry — preview URL transient network only)",
+    "frontend": "100% for Tacho add/edit/delete/log-download/next_due-recompute + dashboard+calendar integration + regression smoke (all nav pages + insurance AI import + logout)"
+  },
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (seeded)",
+  "seed_data_creation": "During UI test: created a Vehicle Unit tacho record TEST_UI_VU_HHMMSS (fully cleaned via edit→delete). During API cleanup: also removed a stray TEST_UI_AB12 CDE record leftover from an earlier failed UI attempt. During backend pytest: TestTacho created & deleted TEST_Drv/TEST_VU/TEST_LogDL/TEST_TachoDash/TEST_iso records; also two ephemeral TEST_tac_a/TEST_tac_b users for isolation test (registered accounts remain — no delete-user endpoint). Region left as UK. Seeded John Smith Driver Card record untouched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Tacho endpoints and UI are fully verified. Test suite location: /app/backend/tests/backend_test.py — run TestTacho only: `pytest /app/backend/tests/backend_test.py::TestTacho -v` (~6s). Full suite: `pytest /app/backend/tests/backend_test.py -v` (~85s parallel, ~90s serial). When running Playwright in dev mode against the preview URL, expect the CRA react-error-overlay to appear from a benign ResizeObserver warning fired by shadcn components — dismiss by injecting a style tag hiding `#webpack-dev-server-client-overlay, iframe[title='Uncaught runtime errors:']` and pressing Escape. Login submit selector: `button[type=\"submit\"]` (avoid role=button name='Sign In' which matches the tab label first). The tacho card seeded for the manager user is John Smith (Driver Card, freq 28, currently ~28d out from today).",
+  "rca of the issue": "N/A — no bugs found. All happy-path and edge cases (invalid id 404, no-auth 401, cross-user isolation, next_due recomputation on edit and on log-download, dashboard alerts + counts, calendar events) behave correctly. The one gotcha for automation was the CRA dev-mode error overlay hijacking clicks — a Playwright-only concern, not a user-facing bug in prod builds."
+}

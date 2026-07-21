@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 29 — Regression pass after tacho_engine.py refactor + verification of the new Weekly-Walkaround-in-Audit + QR driver auto-login + missed-day flags. Pytest suite /app/backend/tests/test_iter29_refactor_and_audit.py: 7 passed, 1 skipped (tacho PDF layout — see below), 1 FAILED (audit PDF returns 500 due to reportlab LayoutError). Frontend: manager Drivers → issue-code-button → show-qr-button opens driver-qr dialog with a real QR svg and the 6-char access code (KHAQ76 in this run); navigating to /driver?code=KHAQ76 auto-logs the driver in (no code typing) and driver-home + driver-tile-weekly render immediately. Manager /maintenance → Weekly Checks tab shows a weekly-card for the seeded past-week sheet (2026-07-13) with all 7 weekly-card-day-{mon..sun} chips styled bg-red-100/text-red-600 and a red weekly-missed-flag reading ' · 7 missed day(s)'. Regression PDFs walkaround / weekly_walkaround / defects / service / wheel all return 200 %PDF. GET /api/reports/audit?format=json contains a section with heading='Weekly Walkaround Checks' (i.e. Fleet Audit Report now includes weekly checks). Tacho refactor verified: tacho_engine.py imports cleanly, server.py `from tacho_engine import parse_ddd, parse_ddd_last_timestamp, detect_ddd_infringements, _DDD_EXTS` at line 23 works, /api/tacho list + full CRUD (POST/PUT/DELETE) all 200, /api/tacho/analyses = 200 — no import/NameError/500 from the refactor.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/reports/audit  (and GET /api/reports/tacho)",
+        "issue": "500 Internal Server Error whenever tacho_analyses records exist. reportlab raises LayoutError: `Flowable Table 3 rows x 6 cols (tallest row 13331) with cell(0,0) containing 'Analysed'(605 x 13572), tallest cell 13331 points, too large on page 2` — the 'Summary' cell in reports.tacho_report (reports.py:274) contains the full multi-paragraph infringement narrative which can be tens of thousands of points tall and cannot fit on a single reportlab table row. This makes the Fleet Audit Report PDF unusable for any operator that has ever run a .ddd analysis, even though the JSON audit and the standalone /reports/weekly_walkaround PDF work. NOT caused by the tacho_engine.py refactor (the refactor only moved pure logic).",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter29_refactor_and_audit.py",
+    "/app/test_reports/pytest/pytest_iter29.xml"
+  ],
+  "action_items": [
+    "Fix reports.tacho_report / pdf_export table rendering so the long 'summary' text wraps and paginates. Options: (a) truncate/ellipsize the summary column to ~600 chars in reports.py:tacho_report and put the full text in a follow-up KV section per record, or (b) use a Platypus Paragraph with a splitByChar/wordWrap policy in pdf_export so tall cells split across pages, or (c) set `splitByRow=1` + `repeatRows=1` and use Paragraph with `allowSplitting=1`. Currently the audit PDF endpoint 500s for any user with tacho analyses.",
+    "(Optional) Add a <DialogDescription> to the driver-qr Radix dialog — same a11y warning noted in iter_28 still present (non-blocking).",
+    "(Optional) Consider a stricter idempotency check on POST /api/weekly-walkarounds when week_start is in the past; today it happily creates a sheet for arbitrary past Mondays which is fine but may want a guardrail."
+  ],
+  "critical_code_review_comments": [
+    "server.py:23 `from tacho_engine import parse_ddd, parse_ddd_last_timestamp, detect_ddd_infringements, _DDD_EXTS` — refactor is clean, symbols used at server.py:2492-2496 (run_tacho_analysis) and 2557 (parse endpoint) match the tacho_engine.py public surface. No functional regression.",
+    "tacho_engine.py has no DB / FastAPI coupling — pure module, safe to unit-test independently. Good separation.",
+    "reports.py:314 audit_pack now appends weekly_walkaround_report(...) — verified via JSON: audit sections contain a section with heading 'Weekly Walkaround Checks'. Overview KV also adds ('Weekly checks', count).",
+    "reports.py:268 tacho_report — root cause of audit-pdf 500. Column 'Summary' pipes a.get('summary') straight into a table cell; the .ddd analyser produces multi-line narrative (~500 chars normal, larger with many infringements) and reportlab's table row height exceeds page height when this is >~ 10 lines. Either truncate for the table view or refactor into KV blocks per analysis.",
+    "Drivers.js:293 QRCodeSVG value = `${window.location.origin}/driver?code=${qrFor.access_code}` — correct; scanned/pasted URL triggers DriverApp.js:97-99 auto-login effect.",
+    "DriverApp.js:82-99 auto-login: doLogin(c) runs from useEffect when ?code= param exists. If the code is invalid a toast fires and driver-login remains — good. Verified live: valid code lands on driver-home without user typing.",
+    "WeeklyWalkaround.js:39-44 isMissed() uses local-timezone Date and compares against today (00:00 local). Because backend snaps week_start to Monday (UTC), a client in a very negative timezone right after midnight local could disagree by one day — acceptable edge case.",
+    "DriverApp.js:361-366 uses same missed-day logic keyed to sheet.week_start — good but note that driver only ever sees the CURRENT week's sheet (upserted server-side), so driver-weekly-missed can only appear when today is Tue-Sun and earlier weekdays of the current week are unfilled. On Monday itself, missedDays is always 0 by design.",
+    "(iter_28 finding still applies) server.py:3363 update_weekly_walkaround uses `{k:v for ... if v is not None}` — an explicit `days: {}` payload would wipe recorded days. Frontend never sends this but consider `if v not in (None, {})` for safety."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter29_refactor_and_audit.py"
+  ],
+  "success_rate": {
+    "backend": "88% (7/8 executed pytest checks pass, 1 skipped due to same audit-PDF LayoutError, 1 hard-failed — the audit PDF endpoint)",
+    "frontend": "100% for QR auto-login + manager missed-day flags. Driver-side driver-weekly-missed not exercisable today (Mon 2026-07-20) because driver only sees current week and there are no past weekdays in the current week yet."
+  },
+  "test_credentials": "manager@haulcheck.co.uk / Test1234!  (existing seeded manager). Fresh driver access code generated during test: KHAQ76 (John Smith). Codes are single-active per driver — POST /api/drivers/{id}/access-code returns a new one.",
+  "seed_data_creation": "During pytest a TESTIT 29 vehicle may have been auto-created if none existed (kept, non-destructive). A weekly-walkaround sheet wwc_9251c372d7 for AB12 CDE / 2026-07-13 was created via curl for missed-day UI verification and then DELETED at the end of the run. No lingering test data other than a possibly-new weekly sheet for the CURRENT week auto-created by the pytest fixture (safe, upsert-idempotent).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Re-run: `cd /app/backend && python -m pytest tests/test_iter29_refactor_and_audit.py -v -o addopts='' --junitxml=/app/test_reports/pytest/pytest_iter29.xml`. The only failing case is TestAuditIncludesWeekly::test_audit_pdf_returns_pdf — this will pass once reports.tacho_report is fixed. To reproduce the audit-PDF 500 without pytest: login as manager, curl -H 'Authorization: Bearer <tok>' $BASE/api/reports/audit -o /tmp/a.pdf → 500. The backend log has the full LayoutError stack. Weekly-missed driver-side check should be re-verified on a Tue-Sun (i.e. any day that is NOT the very first day of the week) — that's when the current-week driver sheet will have past unfilled weekdays and DriverApp.js:375 driver-weekly-missed becomes visible. Manager missed flag verification already covers the algorithm; the driver renderer uses identical logic.",
+  "rca of the issue": "Audit PDF 500: reports.tacho_report builds a table where the 'Summary' column value = a.get('summary'), which is the multi-paragraph human-readable EU 561 infringement report produced by tacho_engine.detect_ddd_infringements. reportlab tries to render that entire paragraph into a single non-splittable table cell; when the cell's rendered height exceeds the frame height (~ 733pt), Platypus raises LayoutError. Fix: (1) truncate summary in the table row (e.g. first sentence + '…'), OR (2) switch tacho_report from a single big table to per-record KV/paragraph sections that reportlab CAN paginate, OR (3) build_report_pdf can wrap long paragraph cells with `Paragraph(text, style)` inside a `Table` where the row is allowed to splitByRow=1 (requires Platypus LongTable) — cleaner but bigger change. Refactor sanity: I verified via direct import that tacho_engine.py exposes parse_ddd / parse_ddd_last_timestamp / detect_ddd_infringements / _DDD_EXTS and server.py successfully imports and uses them — the refactor itself is regression-free."
+}

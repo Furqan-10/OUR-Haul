@@ -1,0 +1,28 @@
+# Archives (the original Emergent export)
+*.zip
+
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Local tooling installed by the dev setup (MongoDB binaries, data dir)
+.tools/
+.data/
+
+# Environment files — never commit real secrets, but keep the templates
+.env
+.env.*
+*.env
+!.env.example
+!**/.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

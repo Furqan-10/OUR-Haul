@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 21 — Verified new Documents templates (Driver Infringement, Adhoc Note, Attestation Record, Indoctrination Document, Infringement Report) and the brand-new Tacho Portal 'Infringement Analyser' end-to-end. Backend pytest (10/10 passed): AI draft for the 6 required templates each returns non-empty subject+body, POST /api/tacho/analyse creates a persisted TachoAnalysis with the expected shape, GET /api/tacho/analyses lists it, GET /api/tacho/analyses/{id}/report returns 200 application/pdf (%PDF, >500B), DELETE removes it, bogus id → 404, unauth → 401, file not found → 404. Playwright covered: login → /tacho → Infringement Analyser tab → open dialog → upload small PNG via [data-testid='analyse-upload-input'] → Run AI Analysis (~10-15s) → analysis card appears with count badge; PDF button returned 200 application/pdf on the network; Create Driver Infringement letter button navigated to /office?tab=documents and the Generate Document dialog auto-opened with template='Driver Infringement' and the points field prefilled from the tacho analysis (recipient carries through when a driver is picked); on Documents → Generate Document the template dropdown listed all 16 templates including the 6 new/required ones; AI Draft populated subject + a 2383-char body; Generate & Save PDF created a new document card; reload of /tacho persisted the analysis card, and delete-analysis-button removed it (toast 'Analysis removed'). No console errors observed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter21_tacho_analyser.py",
+    "/app/test_reports/pytest/pytest_iter21.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py::ai_analyse_tacho — good defensive JSON extraction (strip code fences, find first '{'..last '}') and returns None on failure, which analyse_tacho gracefully falls back to a 0-infringement analysis. ✓",
+    "Tacho.js createInfringementLetter() correctly stores {recipient_name, points} in sessionStorage and navigates to /office?tab=documents; Documents.js reads it once in useEffect and removes the key — one-shot handoff pattern is clean. ✓",
+    "Minor: openAnalyse() resets driver_name and attachments but shares FileUpload with the main add-tacho dialog — no state leakage observed in testing, but worth noting for future refactors. Non-blocking.",
+    "server.py is now 3419 lines (was 3261 in iter 20). Continuing to grow with new AI features (analyser, drafting) — recommend splitting into per-domain routers when convenient. Pre-existing tech-debt, no functional impact.",
+    "Backend LETTER_GUIDES entries for new templates are well-scoped and reference EU 561/2006 / GB rules, DVSA/RSA — matches the region toggle. ✓",
+    "GET /api/tacho/analyses/{aid}/report uses asyncio.to_thread for build_report_pdf — good, keeps event loop free. ✓"
+  ],
+  "updated_files": ["/app/backend/tests/test_iter21_tacho_analyser.py"],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (all 5 flows: template dropdown, AI draft+generate, analyser upload+run, PDF endpoint, create-letter handoff, persistence+delete)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT)",
+  "seed_data_creation": "One transient tacho analysis (driver_name TEST_John_Smith / John Smith) + one generated Driver Infringement document card were created during the browser flow. The analysis was deleted via the UI's delete-analysis-button; the generated document remains on the manager's Documents list (not cleaned up because delete of that doc is not part of the specified flow). Backend pytest also creates and deletes its own transient analysis.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "New endpoints: POST /api/tacho/analyse, GET /api/tacho/analyses, DELETE /api/tacho/analyses/{aid}, GET /api/tacho/analyses/{aid}/report — all verified. Documents draft templates expanded to 16, all populate via /api/documents/draft. UI selectors: [data-testid='tacho-tab-analyser'], [data-testid='analyse-tacho-button'], file input at [data-testid='analyse-upload-input'] (FileUpload appends '-input' to the testid prop), [data-testid='run-analyse-button'], [data-testid='tacho-analysis-card'], [data-testid='analysis-pdf-button'], [data-testid='create-infringement-letter-button'], [data-testid='delete-analysis-button']. AI analyse call takes ~10-20s for small images; give 60-120s timeout. Manager left with 1 seeded 'Driver Infringement' doc card from this iteration.",
+  "rca of the issue": "No bug encountered. One selector subtlety: the FileUpload component's hidden file input is `${testid}-input` (e.g. analyse-upload-input), not a descendant of a wrapper with the raw testid — future testers should use the -input suffix directly."
+}

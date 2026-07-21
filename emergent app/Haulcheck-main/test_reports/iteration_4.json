@@ -1,0 +1,55 @@
+{
+  "summary": "E2E backend + frontend testing of iteration 4 (Trailers as Fleet tab, Driver Training with certificate upload, generic Emergent object-storage file upload for Defects/Documents/Training, dashboard aggregation of trailer+training alerts). Backend pytest: 35/35 pass (added TestTrailers, TestTraining, TestFileUpload with bearer + ?auth= img-src flow + wrong-user 404, TestDashboardTrailersTraining, plus regression suites). Frontend: login, Fleet page with Vehicles+Trailers tabs, add/edit/delete a trailer, Training add-with-certificate-upload (thumbnail rendered via /api/files/{id}?auth=<jwt>, naturalWidth>0 verified), edit+delete training, Defect create-with-photo (attachment-thumbs renders and image loads), Document create-with-scan (attachment-thumbs renders and image loads), Dashboard shows training aggregation, Calendar/PMI/Drivers pages load, logout returns to /login. All primary flows working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Training dialog",
+        "issues": [
+          "React console warning: 'Select is changing from uncontrolled to controlled' emitted when the driver Select is opened. Root cause: form.driver_id starts as '' (empty string is truthy for the DOM but Radix Select treats value={undefined} vs '' inconsistently). The current workaround uses value={form.driver_id || undefined}, but the initial `empty` object still sets driver_id: '' — consider initialising to undefined or defer setting the Select value until a driver is chosen. Purely a console warning, not user-visible."
+        ]
+      },
+      {
+        "screen": "Dashboard alerts (trailer)",
+        "issues": [
+          "When testing, the freshly-seeded account had no trailer or training with an expired/due-soon date within the alerts view, so the words 'Trailer' / 'Annual Test' did not surface in the alerts feed during the smoke check. Aggregation is verified in backend (TestDashboardTrailersTraining creates an expired trailer and asserts the trailer alert appears). If dashboard is expected to always show a trailer entry from seed data, adjust seed to include an expiring TRL-001 date."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "MINOR: Silence React 'uncontrolled to controlled' warning on training-driver-select — initialise `driver_id` in the empty form as `undefined` (or use `form.driver_id ?? ''`) so the Select stays fully controlled.",
+    "OBSERVATION (not a bug): Seeded manager account currently has 0 drivers but a legacy training record for 'John Smith' with driver_id=''. Consider adding a matching seeded driver so the Training dialog's driver-select is non-empty out of the box (or hide the orphan legacy record). Not blocking — user can create a driver and it flows through."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /api/upload: correctly enforces 15MB cap, wraps storage put_object in try/except -> 502. Verified download works with both Bearer and ?auth=<jwt>. Files scoped per user (wrong-user request returns 404).",
+    "server.py GET /api/files/{file_id}: uses `auth` query param OR bearer OR session cookie -> covers <img src> use-case cleanly.",
+    "server.py gather_stats: trailers use `mot_due`/`service_due` labelled 'Annual Test'/'Service'; training uses `expiry_date`. Both feed alerts + counts. Verified via backend tests.",
+    "server.py Calendar: /api/calendar now emits `training` events with type + date + status. Confirmed via backend tests.",
+    "Training.js: uses shared `Header`/`Field`/`Empty` from Vehicles.js — good DRY. Uses local `empty` state initialiser.",
+    "FileUpload.js: builds img URLs using `${API}/files/${id}?auth=${token}` — reads token from localStorage each render. Works for JWT users; Google (cookie) users on a different origin cannot render <img> without ?auth=. For Google session users, cookies should also work if same-site; test coverage here focuses on JWT flow.",
+    "Trailers.js is exported as `TrailersPanel` and imported into Vehicles.js as a tab panel — folded correctly per spec."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {
+    "backend": "100% (35/35)",
+    "frontend": "100% on core new flows (trailers CRUD, training upload + CRUD, defect upload, document upload, thumbnail rendering via ?auth=, logout)"
+  },
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT) — working.",
+  "seed_data_creation": "Backend tests create TEST_ prefixed users/vehicles/drivers/documents/defects/trailers/training/files and clean up after. Frontend tests created and then deleted a TEST-UI trailer, a TEST-UI training record, a TEST-UI defect and a TEST-UI document plus a TEST UI Driver (deleted at end). One uploaded file remains in object storage per test run (files collection has no UI delete — matches feature scope, and it's user-scoped).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression at /app/backend/tests/backend_test.py now covers Trailers CRUD, Training CRUD (with driver_id filter), File upload/download via Bearer + ?auth= query-param (used by <img src>), and Dashboard/Calendar aggregation of trailer + training. Frontend flow verified: trailers are under /vehicles tab-trailers; training page at /training uses testids `training-driver-select` (may show 'Select driver' if no drivers exist for account), `training-upload-input`, `training-card`, `attachment-thumbs`. Defects testid for reg is `defect-reg` (not `defect-vehicle-reg`) — worth noting for future tests. Object storage is live and working (upload + retrieve verified).",
+  "rca of the issue": "N/A — no functional defects found. Only note: React 'uncontrolled->controlled' warning on driver Select is cosmetic (Radix Select initial value swap). Seed data has a training record with driver_name='John Smith' but no matching driver document, which is a data-quality observation, not a bug."
+}

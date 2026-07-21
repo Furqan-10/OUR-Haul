@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 15 — verified the tacho gap-detection bug fix in detect_gaps() (server.py ~line 2146-2197). All 5 pytest tests PASS in 16.6s (junit: /app/test_reports/pytest/pytest_iter15.xml). Coverage: (1) Driver-card false-positive is gone — created driver 'QA Tacho Driver' + tacho record with reference 'qa  tacho  driver' (different case + double whitespace) + last_download=today; POST /api/ai/risk-insight → the checklist does NOT contain 'QA Tacho Driver: no driver-card tacho download record', and the tacho row's next_due is >= today (i.e. ~28 days ahead, not overdue). (2) Positive case still fires — created a driver with no matching tacho record; the checklist DOES contain the expected 'no driver-card tacho download record' item with area='Tacho', priority='medium'. (3) Vehicle-unit equivalent — created vehicle 'QA-VU-01' + Vehicle Unit tacho with reference 'qa-vu-01' (lowercase); NO false 'no vehicle-unit tacho download record' item appears. (4) Vehicle-unit positive case — new vehicle with no matching download DOES surface the vehicle-unit gap. (5) Regression on /api/ai/risk-insight — endpoint returns valid {score:int 0-100, insight:str non-empty, checklist:list} for the manager account; every checklist item has area/item/priority (high|medium|low); areas are constrained to the documented set {Operator, Documents, Insurance, Fleet, PMI, Maintenance, Tacho, Drivers, Training}. All 4 QA test drivers/vehicles/tacho records created during the run were deleted via API DELETE (verified with a direct Mongo scan: 0 leftover docs matching QA/TEST iter15 filter). Manager seed data untouched.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/tacho/{tid}, /api/drivers/{did}, /api/vehicles/{vid}", "issue": "Silent no-op — returns {ok:true} even when the id doesn't exist. Pre-existing behavior flagged in iteration_14; not a bug for this fix. Consider surfacing 404 for missing/foreign ids."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter15_tacho_gap.py",
+    "/app/test_reports/pytest/pytest_iter15.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py 2146-2147 `_norm()` helper (lower + collapse whitespace) is correctly applied to BOTH sides of the comparison — the tacho `reference` list (2148 for VU, 2176 for DC) is pre-normalized, and the driver name / vehicle reg on the check side is normalized via `_norm(reg)` (2173) and `nmn = _norm(nm)` (2181). Bidirectional-substring `a==b or a in b or b in a` handles 'John Smith' matching 'Driver John Smith Card #12' and vice versa. Good.",
+    "server.py 2173 & 2196: the guard `if reg and ...` and `if nmn and ...` correctly avoids false gaps when the driver name / vehicle reg is empty (an empty string would substring-match every reference otherwise — this WAS handled).",
+    "TachoInput (server.py 368) does NOT strip / validate the `reference` field on write — free-text is stored as-is. That's fine now because detect_gaps normalizes at read-time, but if downstream code ever depends on a canonical form, consider trimming on write.",
+    "POST /api/ai/risk-insight (server.py 2208-2240) sorts gaps by priority before rendering into the LLM prompt but returns the FULL, unsorted checklist to the client (well — sorted by 'order' dict). Note: the sort on line 2218 mutates the list in-place, so the returned checklist IS sorted by priority. Deterministic behavior confirmed. Good.",
+    "server.py file is ~2733 lines — pre-existing tech-debt flag from iter 12/13/14. Not a regression."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter15_tacho_gap.py"],
+  "success_rate": {"backend": "100% (5/5 iter15 tests)", "frontend": "N/A — backend-only per request"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (existing).",
+  "seed_data_creation": "During tests (all cleaned via API DELETE, verified with Mongo scan): driver 'QA Tacho Driver' + driver-card tacho 'qa  tacho  driver'; driver 'QA NoTacho <uuid>'; vehicle 'QA-VU-01' + vehicle-unit tacho 'qa-vu-01'; vehicle 'QA-VU-<hash>'. 0 residual docs in drivers/vehicles/tacho collections.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 15 confirmed the tacho gap-detection fix. Key files: /app/backend/tests/test_iter15_tacho_gap.py (reusable pytest suite, 5 tests, ~17s). Reference behavior: TachoRecord.reference is free text. detect_gaps() at server.py 2146-2197 uses `_norm()` (lower + collapse whitespace) and bidirectional-substring match against `tacho_dc_refs` (Driver Card) and `tacho_vu` (Vehicle Unit). To trigger the driver-card gap, create a driver whose normalized name does NOT appear as substring in any Driver Card tacho reference (and vice versa). POST /api/ai/risk-insight returns {score, insight (LLM prose from gpt-5.4, ~2-5s), checklist (deterministic list of {area, item, priority})} — always assert against `checklist`, not `insight`.",
+  "rca of the issue": "N/A — this iteration is verification, not RCA. The bug (case/whitespace-sensitive exact match in detect_gaps producing false 'no download record' gaps) is fixed and confirmed via 5 targeted tests covering both driver-card and vehicle-unit paths (both false-positive AND positive cases), plus a regression check on the risk-insight endpoint shape."
+}

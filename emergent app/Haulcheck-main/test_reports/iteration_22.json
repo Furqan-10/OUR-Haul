@@ -1,0 +1,26 @@
+{
+  "summary": "Iteration 22 — Verified the new Dashboard Audit Reports feature end-to-end. On Dashboard, the KPI row now shows a dark 'Audit Reports' tile (data-testid='kpi-audit-reports') where Insurance used to be, and kpi-insurance is confirmed absent. Clicking the tile opens the Audit Reports dialog (data-testid='audit-report-body') and by default loads the 'Full Compliance Audit Pack' with title 'Compliance Audit Pack', subtitle including operator name (HaulCheck Logistics Ltd) and authority badge 'DVSA (UK)'. Overview KV section shows correct counts (Vehicles 2, Trailers 1, Drivers 2, PMI schedules 2, PMI records 3, Open defects 1, Service/Wheel/Daily/Tacho 0). All 10 section headings render (Vehicles, Trailers, Drivers, PMI Schedules, Inspection Records, Defect Reports, Service Records, Wheel Security Audits, Daily Walkaround Checks, Tacho Infringement Analyses) plus Overview. Found 11 report-status-pill elements with correct colour coding (expired = #FEE2E2/#B91C1C, valid = #DCFCE7/#15803D, unknown = #F1F5F9/#64748B). Changing the selector (data-testid='audit-report-select') to Drivers → title 'Drivers — Licence & CPC', single Drivers section; Vehicles → 'Fleet — Vehicles', single Vehicles section; Tacho Analyses → 'Tacho Analyses', single 'Tacho Infringement Analyses' section; PMI Inspections → 'PMI Inspections'; back to Full Compliance Audit Pack works. PDF button (data-testid='audit-download-button') triggered GET /api/reports/audit which returned 200 application/pdf. Print button (data-testid='audit-print-button') opened a new browser tab (popup) at about:blank containing a doctype HTML page with the report content — verified via page.context.expect_page and popup.content(). Evidence button was NOT rendered (has_files=false for this operator), matching backend response and the request note. No console errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AuditReportDialog.js — clean separation of fetch (GET /reports/{kind}?format=json), on-screen render, printReport() (opens a popup with self-invoking window.print() script), and downloadPdf() reuse. Popup blocker gracefully falls back to a sonner toast 'Allow pop-ups to print'. ✓",
+    "server.py::download_report — the same builder produces both PDF and JSON, so the on-screen dialog is guaranteed to match the PDF content. Good DRY. ✓",
+    "Minor code-review: printReport builds HTML via string concatenation with a small esc() helper — sufficient for internal admin data but noted for future — worth switching to a serialiser if any of the section cells could contain untrusted rich text later. Non-blocking.",
+    "REPORT_KINDS list on the FE is duplicated logic vs the backend _REPORT_BUILDERS map — if a new kind is added on one side and not the other it will silently break. Consider exposing GET /api/reports/kinds as a source of truth in a future iteration. Non-blocking.",
+    "server.py is now 3430 lines — continues to grow. Suggest per-domain routers when convenient (pre-existing tech debt, no functional impact). ✓"
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested (frontend-only request)", "frontend": "100% (tile replacement, dialog open, 5 section switches incl. Full audit, PDF 200 application/pdf, Print popup opened with valid HTML, status pill colour coding, evidence-button conditional rendering)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (JWT via /login)",
+  "seed_data_creation": "None — read-only verification of Audit Reports UI. No data modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "AuditReportDialog uses Radix Select — dropdown options must be selected via page.get_by_role('option', name=..., exact=True) after opening [data-testid='audit-report-select']. Do NOT use page.click('text=...') because section headings inside audit-report-body will match first. The Print button opens window.open('', '_blank') — capture with page.context.expect_page(); popup URL is about:blank but its document is populated via document.write with the print HTML. Manager account currently has 2 vehicles (AB12 CDE expired MOT, BX20 XYZ unknown), 1 trailer TRL-001 valid, 2 drivers, PMI schedules for both vehicles, 1 open defect, and 1 previously-generated Driver Infringement doc from iter 21. Full audit pack currently has has_files=false so the audit-download-evidence-button is not rendered — attach a file to any defect/service/walkaround record if you need to test it.",
+  "rca of the issue": "No bugs encountered."
+}

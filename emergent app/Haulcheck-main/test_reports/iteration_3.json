@@ -1,0 +1,54 @@
+{
+  "summary": "Full backend + frontend E2E testing of new PMI & Calendar features on HaulCheck. Backend: 24/24 pytest passing (added TestPMI, TestCalendar, TestDashboardPMI covering auto-next-due, full lifecycle, record inspection with next_due advancement, calendar aggregation, dashboard PMI alerts/counts). Frontend: login, PMI create/edit/delete/record-inspection flows, next_due advancement visible on card, records appear in Recent Inspections, Calendar month grid (35 cells), prev/next/today controls, event dots on days with pmi_due/pmi_done/defects, day-events panel populates on click, regression on Vehicles/Drivers/Defects/Documents pages, logout — all pass. One user-visible issue: CRA dev error overlay intercepts a benign 'ResizeObserver loop completed with undelivered notifications' warning triggered by Radix Select inside the Record-Inspection Dialog, which briefly blocks interaction with the page in the preview environment.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Inspections page - Record Inspection dialog",
+        "issue": "After opening/closing the shadcn Select inside the Dialog (Result field), the browser emits 'ResizeObserver loop completed with undelivered notifications' which the CRA/webpack dev error overlay catches and displays as a full-page red 'Uncaught runtime errors' overlay that blocks all interaction until dismissed. Same overlay then re-appears on subsequent navigation. This is a well-known benign warning, but the overlay makes the app appear broken in the preview/dev build. In production build the overlay is not shipped, however end users on the preview URL do see it.",
+        "selector": "iframe#webpack-dev-server-client-overlay (root cause: Radix Select inside Dialog resize)",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Dashboard",
+        "issues": [
+          "counts.pmi is returned by /api/dashboard (verified in backend tests) but there is no dedicated PMI KPI card on the dashboard UI - only Vehicles / Drivers / Documents / Open Defects KPIs are shown. Consider adding a PMI KPI card so the new pmi count surface is visible in the UI."
+        ]
+      },
+      {
+        "screen": "Dialogs (both Add PMI and Record Inspection)",
+        "issues": [
+          "Console warning: 'Missing Description or aria-describedby={undefined} for {DialogContent}' — Radix Dialog accessibility warning. Add DialogDescription (or aria-describedby) to every DialogContent to satisfy a11y."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "MEDIUM: Suppress the benign ResizeObserver warning so CRA's dev overlay does not appear. Common fix: add a global window.addEventListener('error', e => { if (e.message.includes('ResizeObserver loop')) e.stopImmediatePropagation(); }) early in src/index.js, or debounce the Radix Select trigger's ResizeObserver.",
+    "LOW: Add DialogDescription to Dialogs on Inspections page (New PMI Schedule, Record PMI) to remove the aria-describedby a11y warning.",
+    "LOW (enhancement): Consider surfacing counts.pmi from /api/dashboard as a KPI tile on the dashboard so the new PMI feature is discoverable at a glance."
+  ],
+  "critical_code_review_comments": [
+    "server.py: /api/pmi/{pid}/complete returns record with a popped _id — but pmi_records.insert_one is called on dict(record) so _id is only mutated on the DB doc, and record.pop('_id', None) at line 513 is defensive but unnecessary. Fine as-is.",
+    "server.py: create_pmi uses advance_due(now_iso(), frequency_weeks) which parses an ISO datetime and adds weeks. This is correct because datetime.fromisoformat handles ISO timestamps with tz. Verified next_due = today + 6 weeks in backend test.",
+    "server.py: gather_stats now aggregates pmi_schedules into alerts + counts['pmi']; verified with a seeded expired PMI schedule that both counts['pmi'] and an alert with type='pmi' and status='expired' appear.",
+    "Calendar.js: eventsForDay uses parseISO(e.date); date-fns parseISO handles 'YYYY-MM-DD' correctly. Note: defect created_at ISO timestamps are sliced to YYYY-MM-DD server-side (line 543). OK.",
+    "Inspections.js: shadcn Select inside Dialog + Textarea likely triggers ResizeObserver relayout that emits the benign browser warning; consider the global suppression above.",
+    "backend_test.py is now the canonical regression suite for backend (24 tests, all pass in ~11s under pytest-xdist)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "100% on core flows (1 medium UX issue: dev-mode ResizeObserver overlay)"},
+  "test_credentials": "manager@haulcheck.co.uk / Test1234! (from /app/memory/test_credentials.md) - working.",
+  "seed_data_creation": "Backend tests create TEST_ prefixed users/vehicles/drivers/documents/defects/PMIs and clean them up (delete after each test). Frontend test created a PMI schedule 'TEST-UI*' via the UI and deleted it at end; one Recent Inspection record it added remains in DB (records collection has no UI delete, matches feature scope).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite at /app/backend/tests/backend_test.py now covers PMI + Calendar + Dashboard PMI alerts. Only outstanding UI finding is the ResizeObserver overlay caused by Radix Select-in-Dialog on /inspections; reproduce by opening 'Record Inspection' dialog and toggling the Result select. Suggest global window.error suppression for that specific message.",
+  "rca of the issue": "Radix UI's SelectContent uses ResizeObserver to position its popover. When the SelectContent renders inside a Dialog and the layout reflows, Chromium sometimes emits 'ResizeObserver loop completed with undelivered notifications'. This is a benign, non-crashing browser warning. However, CRA / react-error-overlay treats any window 'error' event as an uncaught runtime error and paints a full-page red overlay. In production (react-scripts build) this overlay is not bundled, so end users of a deployed prod build won't see it. In the current preview environment (running the dev server), it appears. Fix by suppressing the specific message via window.addEventListener('error', ...) in src/index.js before ReactDOM.render."
+}
