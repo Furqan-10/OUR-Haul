@@ -1,0 +1,51 @@
+# Local development / test dependencies.
+#
+# requirements.txt is the Emergent *deployment* manifest: it pins the whole
+# platform image (pandas, boto3, litellm, google-genai, s5cmd ...) and several
+# of those pins do not build on Windows. This file is the minimum needed to
+# actually run `uvicorn server:app` and `pytest` on a developer machine.
+#
+# Everything server.py needs at import time is listed here. The two heavyweight
+# integrations are imported lazily *inside* functions -- `emergentintegrations`
+# (AI) and `resend` (email) -- so the app boots and the suite runs without them;
+# the code paths that use them are skipped locally. Phase 4 puts both behind
+# provider interfaces with null implementations so this stops being incidental.
+#
+#   py -3.12 -m venv .venv
+#   .venv/Scripts/python -m pip install -r requirements-local.txt
+
+# --- Web framework ---
+fastapi==0.110.1
+uvicorn[standard]==0.25.0
+starlette==0.37.2
+python-multipart==0.0.9
+
+# --- Data / validation ---
+pydantic==2.9.2
+email-validator==2.2.0
+python-dotenv==1.0.1
+
+# --- Database ---
+motor==3.5.1
+pymongo==4.8.0
+
+# --- Auth ---
+PyJWT==2.9.0
+passlib==1.7.4
+bcrypt==4.1.3
+
+# --- HTTP clients ---
+httpx==0.27.2
+requests==2.32.3
+
+# --- PDF generation (imported at module scope by pdf_export.py) ---
+reportlab==4.2.5
+pypdf==5.1.0
+pillow==10.4.0
+
+# --- Scheduler ---
+APScheduler==3.10.4
+
+# --- Tests ---
+pytest==8.3.3
+pytest-xdist==3.6.1

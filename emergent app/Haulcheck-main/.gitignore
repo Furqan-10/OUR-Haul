@@ -99,6 +99,9 @@ frontend/node_modules/.cache/default-development/0.pack
 .env
 .env.*
 *.env
+# ...but the templates must be committed -- they document every key the app reads.
+!.env.example
+!**/.env.example
 credentials.json
 *.key
 .credentials
