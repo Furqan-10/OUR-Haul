@@ -11,6 +11,8 @@ Verifies:
 import os
 import time
 import uuid
+from pathlib import Path
+
 import pytest
 import requests
 
@@ -50,12 +52,18 @@ def auth(session, token):
     return session
 
 
+# backend/, resolved from this file rather than assumed at the container's
+# /app/backend -- these two tests read the source tree directly, so unlike the
+# REACT_APP_BACKEND_URL fallbacks they are not covered by conftest.py.
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
 # ---------- Tacho regression: refactor did not break anything ----------
 class TestTachoRegression:
     def test_import_tacho_engine(self):
         # Direct import check: ensures tacho_engine.py loads without errors.
         import importlib, sys
-        sys.path.insert(0, "/app/backend")
+        sys.path.insert(0, str(BACKEND_DIR))
         te = importlib.import_module("tacho_engine")
         assert hasattr(te, "parse_ddd")
         assert hasattr(te, "parse_ddd_last_timestamp")
@@ -66,7 +74,7 @@ class TestTachoRegression:
 
     def test_server_imports_from_tacho_engine(self):
         # server.py must import the four symbols.
-        with open("/app/backend/server.py") as f:
+        with open(BACKEND_DIR / "server.py", encoding="utf-8") as f:
             src = f.read()
         assert "from tacho_engine import" in src
         for name in ("parse_ddd", "parse_ddd_last_timestamp",
