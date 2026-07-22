@@ -1,7 +1,10 @@
 # HaulCheck
 
 A road-haulage compliance platform for UK (DVSA) and Ireland (RSA) transport
-operators — being converted from a single-user app into a multi-tenant SaaS.
+operators — converted from a single-user app into a multi-tenant SaaS.
+
+> **Taking this over?** Start with **[HANDOVER.md](HANDOVER.md)** — what the app
+> was, what changed, and the setup steps that need accounts in your own name.
 
 It tracks vehicle MOT/CVRT, service, tax and PMI inspections; defects and
 walkaround checks; driver licences, CPC and tachograph hours; operator licence
@@ -39,23 +42,17 @@ on the test suite showing no new failures.
 | **2** | **Auth hardening.** Rate limiting with lockout, 12-char password policy, email verification, JWT revocation via `token_version`, CORS `*` refused outside development | [security.py](emergent%20app/Haulcheck-main/backend/security.py) |
 | **3** | **Platform admin console.** Tenant/user management, metrics, append-only audit log, read-only impersonation | [admin_routes.py](emergent%20app/Haulcheck-main/backend/admin_routes.py), [audit.py](emergent%20app/Haulcheck-main/backend/audit.py), [pages/admin/](emergent%20app/Haulcheck-main/frontend/src/pages/admin/) |
 | **4a** | **Provider interfaces** for storage, email and AI, so Emergent can be swapped out. Storage moved off blocking `requests` onto async `httpx` | [providers/](emergent%20app/Haulcheck-main/backend/providers/) |
+| **4b** | All 6 AI call sites routed through the provider; temp-file handling moved out of the routes. No vendor SDK is imported outside `providers/` any more, and a guard enforces it | [providers/ai.py](emergent%20app/Haulcheck-main/backend/providers/ai.py), [test_provider_decoupling.py](emergent%20app/Haulcheck-main/backend/tests/test_provider_decoupling.py) |
+| **4c** | **Standard Google OAuth** against the deployment's own client, replacing the Emergent-hosted exchange. State is single-use *and* bound to the initiating browser | [oauth.py](emergent%20app/Haulcheck-main/backend/oauth.py) |
 | **5a** | **59 indexes**, single-flight scheduled jobs, `/api/health` readiness probe | [indexes.py](emergent%20app/Haulcheck-main/backend/indexes.py), [scheduling.py](emergent%20app/Haulcheck-main/backend/scheduling.py) |
-
-### In progress
-
-| Phase | What's left in it |
-|---|---|
-| **5b** | **Pagination** — list endpoints still `.to_list(1000)`, so an org with more than 1000 of anything silently truncates. This is the last known correctness gap. |
-| **5b** | **N+1 queries** — `gather_stats` and `detect_gaps` each issue ~10 sequential queries per dashboard load; they can run concurrently via `asyncio.gather`. |
+| **5b** | **Pagination** on the collections that grow without bound, with `X-Total-Count` so truncation is never silent. Dashboard N+1 removed — ~20 sequential reads now run concurrently | [server.py](emergent%20app/Haulcheck-main/backend/server.py), [test_pagination.py](emergent%20app/Haulcheck-main/backend/tests/test_pagination.py) |
 
 ### To do
 
 | Phase | What |
 |---|---|
-| **4b** | Route the 6 remaining AI call sites through `providers/ai.py`. Each uses a different model and branches on image vs PDF, so this is per-site work, not a find/replace. |
-| **4c** | Standard Google OAuth, activating when `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are set, with the Emergent-hosted exchange as fallback. **Needs real Google Cloud credentials to verify.** |
-| **5b** | Structured JSON logging with request and org IDs. |
-| **6** | Split `server.py` (4,974 lines) into domain routers — move-only, no logic change, mounted on the same `/api` prefix so every URL is unchanged. |
+| **6** | Split `server.py` (~5,000 lines) into domain routers — move-only, no logic change, mounted on the same `/api` prefix so every URL is unchanged. **Deferred deliberately:** it is a maintainability tidy-up with no user-visible effect, and 64 models and 160 routes are interleaved rather than in blocks, so it is a large mechanical change best done with the full suite run between each step rather than alongside functional work. |
+| — | Structured JSON logging with request and org IDs. |
 | — | Billing. The org model already reserves `plan`, `plan_limits` and `subscription_status` so payments drop in without a second migration. Deliberately out of scope for now. |
 
 ### Test trajectory

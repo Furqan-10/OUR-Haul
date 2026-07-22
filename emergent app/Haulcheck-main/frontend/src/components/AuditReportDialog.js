@@ -66,7 +66,14 @@ export function AuditReportDialog({ open, onOpenChange }) {
     setLoading(false);
   };
 
-  useEffect(() => { if (open) fetchReport(kind); /* eslint-disable-next-line */ }, [open, kind, from, to]);
+  // Refetch when the dialog opens or the selected range/kind changes.
+  // `fetchReport` is intentionally omitted from the deps: it is recreated every
+  // render and depends only on state already listed here, so including it would
+  // loop. The disable must sit on its own line above the hook -- an inline
+  // trailing comment disables the *following* line, which is why the previous
+  // placement silently did nothing and the warning still failed a CI build.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (open) fetchReport(kind); }, [open, kind, from, to]);
 
   const printReport = () => {
     if (!report) return;

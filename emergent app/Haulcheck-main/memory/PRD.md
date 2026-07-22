@@ -18,6 +18,48 @@ Road haulage compliance web app for transport/fleet managers (desktop) and drive
 - Server-side risk score (0–100) with Low/Moderate/High bands.
 
 
+## SaaS conversion (2026-07 — VERIFIED, backend 376 passed / 26 baseline-failing, frontend build clean under CI)
+
+Converted from a single-user app into a multi-tenant SaaS on the `saas-conversion`
+branch. Seven staged commits, each gated on no new test failures against the
+Phase-0 baseline (221 passed). Full detail in the repository `README.md`,
+`HANDOVER.md`, and `docs/{DEVELOPMENT,SECURITY,SCALABILITY,TEST_BASELINE}.md`.
+
+- **Phase 1 — organisations as the unit of tenancy.** New `organisations` +
+  `org_members` collections; roles owner/manager/viewer. All 193 tenant queries
+  rescoped from `user_id` to `org_id` through the single helper
+  `tenancy.tenant_filter()`, which refuses to build an unscoped filter. Idempotent
+  backfill migration (`migrations/001_org_layer.py`). A source-level guard
+  (`tests/test_tenancy_guard.py`) fails the build if a raw `user_id` filter
+  reappears on a tenant collection. Region moved from `users` to the org.
+- **Phase 2 — auth hardening.** 12-char password policy with weak-pattern
+  blocklist; per-account and (looser) per-address rate limiting with lockout;
+  email verification; JWT revocation via `token_version`; driver-code sweep
+  limited; CORS `*` refused outside development. Seed account password lengthened
+  to `Seed-Fleet-2026!`.
+- **Phase 3 — platform admin console.** `/api/admin` behind `require_platform_admin`;
+  tenant/user management, metrics, append-only audit log, read-only impersonation
+  (enforced centrally in `get_current_user`). `platform_role` grantable only via
+  `scripts/grant_admin.py`, never through an API. The all-tenants `registered_users`
+  count removed from the customer dashboard and moved here.
+- **Phase 4 — Emergent decoupling.** Storage/AI/email behind provider interfaces
+  (`providers/`), each with a Null implementation so the app runs with no keys.
+  Object storage moved off blocking `requests` onto async `httpx`. All 6 AI call
+  sites routed through `providers/ai.py`. Standard Google OAuth (`oauth.py`)
+  against the deployment's own client, state single-use **and** bound to the
+  initiating browser (login-CSRF defence); Emergent OAuth kept as opt-in fallback.
+  Guard (`tests/test_provider_decoupling.py`) forbids a vendor SDK imported outside
+  `providers/`.
+- **Phase 5 — scale.** 59 indexes created idempotently at startup (org_id leads
+  every tenant index); `users.email` unique to close a registration race;
+  single-flight scheduled jobs via a Mongo leader lock; `/api/health` readiness
+  probe; pagination with `X-Total-Count` on the collections that grow without
+  bound (`/fuel` deliberately excluded — cross-record MPG); dashboard N+1 removed
+  via `asyncio.gather`.
+- **Deferred:** splitting `server.py` (~5,000 lines) into domain routers
+  (move-only, no behaviour change); structured logging; billing (org model
+  reserves `plan`/`plan_limits`/`subscription_status`).
+
 ## Improvements batch (2026-06 fork — audit/weekly/QR/refactor)
 - (a) Fleet Audit Report now includes a **Weekly Walkaround Checks** section + count (reports.weekly_walkaround_report,
   audit_pack, _REPORT_BUILDERS 'weekly_walkaround').

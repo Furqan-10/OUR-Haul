@@ -11,6 +11,17 @@ failures.**
 Environment: Windows, Python 3.12, MongoDB 7.0.16 on localhost, backend on
 `http://localhost:8000`, `EMERGENT_LLM_KEY` and `RESEND_API_KEY` both empty.
 
+**After the full SaaS conversion (all phases), same environment:**
+
+```
+376 passed, 25 failed, 2 skipped, 1 error      (33m 49s, pytest -n 0)
+```
+
+155 new passing tests, and **not one new failure** — the 25 failed + 1 error are
+the identical set catalogued below (the one email test that also appears here is
+intermittent and passed in the final run). Every failure is still an unconfigured
+external service or a test that drifted from a deliberate product change.
+
 Reproduce with:
 
 ```bash

@@ -90,11 +90,40 @@ every non-AI, non-upload request without one.
 Unauthenticated by design (a probe has no credentials); it exposes nothing
 beyond liveness and provider names.
 
+## Pagination (`page()` in `server.py`)
+
+The list endpoints returned `.to_list(1000)` (2000 for a few). Past that limit
+the response was simply short, with nothing to signal it — an operator with
+1,100 defects saw 1,000 and no indication that 100 were missing. In a compliance
+product that is worse than an error: the absent records are invisible in exactly
+the audit the tool exists to support.
+
+`page()` keeps the response a bare JSON array, so every existing caller is
+unaffected, and adds:
+
+- optional `?limit=` and `?offset=` for callers that want to page;
+- an `X-Total-Count` header on every response, so truncation is never silent;
+- a server-side log line when a response is short of the total.
+
+It is applied to the collections that grow without bound — defects, PMI records,
+walkarounds, weekly walkarounds, service, wheel audits, tacho, test history,
+documents. Vehicles, drivers and trailers are bounded by fleet size and left
+whole. `/fuel` is deliberately **not** paged: `_enrich_fuel` derives MPG from the
+odometer gap between consecutive fills, so a record is only meaningful next to
+the one before it, and a page boundary would produce a quietly wrong number.
+
+`count_documents` is a second query and therefore a second place the tenant
+filter could be forgotten, so `test_pagination.py` asserts one org's total does
+not move when another creates records.
+
+## N+1 on the dashboard
+
+`gather_stats` issued nine sequential reads and `detect_gaps` thirteen, both on
+every dashboard load — around twenty round trips paid one after another. They are
+independent, so they now run under `asyncio.gather`. No logic changed. The saving
+is invisible where the database is local and grows with the latency between app
+and database in production.
+
 ## Still outstanding
 
-- **Pagination.** List endpoints still use `.to_list(1000)`. The indexes make
-  these fast, but an org with more than 1000 of anything silently truncates.
-- **N+1 queries.** `gather_stats` and `detect_gaps` each issue ~10 sequential
-  queries per dashboard load; they could run concurrently with
-  `asyncio.gather`.
 - **Structured logging** with request and org IDs.
