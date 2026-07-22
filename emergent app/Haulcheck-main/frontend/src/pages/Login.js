@@ -142,6 +142,11 @@ export default function Login() {
               </div>
               <Input data-testid="password-input" id="password" type="password" required value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="••••••••" className="mt-1.5" />
+              {mode === "register" && (
+                <p className="text-xs text-slate-400 mt-1.5" data-testid="password-hint">
+                  At least 12 characters. Avoid common words and your own name or email — a memorable phrase works well.
+                </p>
+              )}
             </div>
             )}
             <Button data-testid="submit-auth-button" type="submit" disabled={busy}

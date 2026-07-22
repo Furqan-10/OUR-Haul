@@ -28,7 +28,7 @@ def _resolve_base_url() -> str:
 BASE_URL = _resolve_base_url()
 API = f"{BASE_URL}/api"
 SEED_EMAIL = "manager@haulcheck.co.uk"
-SEED_PASSWORD = "Test1234!"
+SEED_PASSWORD = "Seed-Fleet-2026!"
 
 
 @pytest.fixture(scope="module")

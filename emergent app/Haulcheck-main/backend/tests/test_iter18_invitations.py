@@ -28,7 +28,7 @@ if not BASE_URL:
 API = f"{BASE_URL}/api"
 
 SEED_EMAIL = "manager@haulcheck.co.uk"
-SEED_PASSWORD = "Test1234!"
+SEED_PASSWORD = "Seed-Fleet-2026!"
 
 
 # ---------- Fixtures ----------
@@ -74,7 +74,7 @@ class TestInvitationCreate:
         # Register a fresh user, then attempt to invite that email
         email = f"TEST_dup_{uuid.uuid4().hex[:6]}@example.com"
         reg = requests.post(f"{API}/auth/register",
-                            json={"email": email, "password": "Password1!", "name": "Existing"}, timeout=15)
+                            json={"email": email, "password": "Strong-Pass-26!", "name": "Existing"}, timeout=15)
         assert reg.status_code == 200
         r = requests.post(f"{API}/invitations", json={"email": email},
                           headers=inviter_headers, timeout=15)
@@ -118,7 +118,7 @@ class TestInvitationList:
         # Fresh other user
         other_email = f"TEST_other_{uuid.uuid4().hex[:6]}@example.com"
         rB = requests.post(f"{API}/auth/register",
-                           json={"email": other_email, "password": "Password1!", "name": "Other"},
+                           json={"email": other_email, "password": "Strong-Pass-26!", "name": "Other"},
                            timeout=15)
         hB = {"Authorization": f"Bearer {rB.json()['token']}"}
         try:
@@ -202,7 +202,7 @@ class TestAcceptInvite:
         try:
             # 3) Accept invite
             r = requests.post(f"{API}/auth/accept-invite",
-                              json={"token": token, "name": "Invited User", "password": "Password1!"},
+                              json={"token": token, "name": "Invited User", "password": "Strong-Pass-26!"},
                               timeout=20)
             assert r.status_code == 200, r.text
             body = r.json()
@@ -216,7 +216,7 @@ class TestAcceptInvite:
 
             # 4) Verify token can no longer be reused (status changed to accepted)
             r2 = requests.post(f"{API}/auth/accept-invite",
-                               json={"token": token, "name": "Second", "password": "Password1!"},
+                               json={"token": token, "name": "Second", "password": "Strong-Pass-26!"},
                                timeout=15)
             assert r2.status_code == 400
 
@@ -270,12 +270,14 @@ class TestAcceptInvite:
                               json={"token": token, "name": "Short PW", "password": "abc"},
                               timeout=15)
             assert r.status_code == 400
-            assert "6 characters" in (r.json().get("detail") or "")
+            # Policy moved to a 12-char minimum (Phase 2); the message changed
+            # but a short password is still rejected, which is what matters.
+            assert "12 characters" in (r.json().get("detail") or "")
         finally:
             requests.delete(f"{API}/invitations/{iid}", headers=inviter_headers, timeout=15)
 
     def test_accept_invalid_token_rejected(self):
         r = requests.post(f"{API}/auth/accept-invite",
-                          json={"token": "totally-bogus-xyz", "name": "X", "password": "Password1!"},
+                          json={"token": "totally-bogus-xyz", "name": "X", "password": "Strong-Pass-26!"},
                           timeout=15)
         assert r.status_code == 400

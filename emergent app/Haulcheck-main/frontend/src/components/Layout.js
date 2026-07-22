@@ -1,11 +1,92 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { LayoutDashboard, Truck, Users, LogOut, Menu, X, CalendarDays, Globe, Gauge, Building2, Bell, Wrench, Briefcase, UserPlus, FileText } from "lucide-react";
+import { LayoutDashboard, Truck, Users, LogOut, Menu, X, CalendarDays, Globe, Gauge, Building2, Bell, Wrench, Briefcase, UserPlus, FileText, MailWarning, Eye, ShieldCheck } from "lucide-react";
 import { useState, useEffect } from "react";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { AuditReportDialog } from "@/components/AuditReportDialog";
+
+/**
+ * Persistent, unmissable marker that this is a support session viewing someone
+ * else's account.
+ *
+ * Loud on purpose. The single worst outcome of impersonation is an operator
+ * forgetting they are in it and reading another company's compliance data as
+ * their own — so this cannot be dismissed, and it states whose account it is.
+ * Writes are refused by the backend regardless; this exists so nobody is
+ * confused about what they are looking at.
+ */
+function ImpersonationBanner() {
+  const { user } = useAuth();
+  if (!user?.impersonated_by) return null;
+  let ctx = {};
+  try { ctx = JSON.parse(localStorage.getItem("impersonating") || "{}"); } catch { /* ignore */ }
+
+  const exit = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("impersonating");
+    window.location.href = "/login";
+  };
+
+  return (
+    <div data-testid="impersonation-banner"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-sky-900 text-sky-50 px-4 sm:px-8 py-2.5 text-sm border-b border-sky-700">
+      <Eye size={16} className="shrink-0" />
+      <span className="flex-1 min-w-[200px]">
+        <strong>Read-only support session</strong>
+        {ctx.email ? <> — viewing <strong>{ctx.email}</strong></> : null}
+        {ctx.org ? <> at <strong>{ctx.org}</strong></> : null}
+        . Changes are disabled and this session is recorded.
+      </span>
+      <button data-testid="exit-impersonation" onClick={exit}
+        className="font-semibold underline hover:no-underline">
+        End session
+      </button>
+    </div>
+  );
+}
+
+// Non-blocking prompt to confirm the account's email address. Access is not
+// restricted while unverified; this is a reminder, not a gate. Accounts that
+// predate email verification are grandfathered as verified server-side, so the
+// banner only appears for newly registered users.
+function VerifyEmailBanner() {
+  const { user, checkAuth } = useAuth();
+  const [sending, setSending] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  if (!user || user.email_verified !== false || dismissed) return null;
+
+  const resend = async () => {
+    setSending(true);
+    try {
+      await api.post("/auth/resend-verification");
+      toast.success("Confirmation email sent — check your inbox.");
+    } catch {
+      toast.error("Could not send the confirmation email just now.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div data-testid="verify-email-banner"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 bg-amber-50 border-b border-amber-200 text-amber-900 px-4 sm:px-8 py-2.5 text-sm">
+      <MailWarning size={16} className="shrink-0" />
+      <span className="flex-1 min-w-[180px]">
+        Confirm your email address to secure your account.
+      </span>
+      <button data-testid="resend-verification" onClick={resend} disabled={sending}
+        className="font-semibold underline hover:no-underline disabled:opacity-50">
+        {sending ? "Sending…" : "Resend link"}
+      </button>
+      <button data-testid="dismiss-verify-banner" onClick={() => { setDismissed(true); checkAuth?.(); }}
+        className="text-amber-500 hover:text-amber-800" aria-label="Dismiss">
+        <X size={15} />
+      </button>
+    </div>
+  );
+}
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, id: "dashboard" },
@@ -22,7 +103,7 @@ const NAV = [
 ];
 
 export default function Layout({ children }) {
-  const { user, logout, updateRegion } = useAuth();
+  const { user, logout, updateRegion, isPlatformAdmin } = useAuth();
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [auditOpen, setAuditOpen] = useState(false);
@@ -99,6 +180,19 @@ export default function Layout({ children }) {
           )}
         </NavLink>
       ))}
+      {/* Only platform administrators see a way into the console; the backend
+          answers 404 for everyone else regardless. */}
+      {isPlatformAdmin && (
+        <NavLink
+          to="/admin"
+          data-testid="nav-platform-admin"
+          onClick={() => setOpen(false)}
+          className="flex items-center gap-3 px-4 py-3 text-sm font-semibold text-amber-400 border-l-2 border-transparent hover:bg-slate-800/60 mt-2 border-t border-slate-800 pt-4"
+        >
+          <ShieldCheck size={20} />
+          Platform Admin
+        </NavLink>
+      )}
     </nav>
   );
 
@@ -164,6 +258,8 @@ export default function Layout({ children }) {
           </div>
         )}
 
+        <ImpersonationBanner />
+        <VerifyEmailBanner />
         <main className="flex-1 p-6 sm:p-8 md:p-10 max-w-[1680px] w-full mx-auto">{children}</main>
       </div>
       <AuditReportDialog open={auditOpen} onOpenChange={setAuditOpen} />

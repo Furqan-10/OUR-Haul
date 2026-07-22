@@ -50,9 +50,12 @@ IDENTITY_COLLECTIONS = {
     "user_sessions",
     "invitations",
     "password_reset_tokens",
+    "email_verification_tokens",
     "org_members",
     "organisations",
+    # Platform-level records that deliberately span every tenant.
     "audit_log",
+    "auth_attempts",
 }
 
 

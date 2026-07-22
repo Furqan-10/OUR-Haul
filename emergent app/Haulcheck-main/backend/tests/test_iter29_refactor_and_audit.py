@@ -20,7 +20,7 @@ BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://transport-verify-3.p
 API = f"{BASE_URL}/api"
 
 MANAGER_EMAIL = "manager@haulcheck.co.uk"
-MANAGER_PASSWORD = "Test1234!"
+MANAGER_PASSWORD = "Seed-Fleet-2026!"
 
 
 # ---------- shared session ----------

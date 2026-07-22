@@ -21,7 +21,7 @@ if not BASE_URL:
 API = f"{BASE_URL}/api"
 
 SEED_EMAIL = "manager@haulcheck.co.uk"
-SEED_PASSWORD = "Test1234!"
+SEED_PASSWORD = "Seed-Fleet-2026!"
 
 
 # ---------- Helpers ----------
@@ -49,7 +49,7 @@ def manager_token():
 def new_user():
     """Register a brand-new isolated user for the isolation test."""
     email = f"isolation_test+{uuid.uuid4().hex[:10]}@haulcheck.co.uk"
-    tok, user = _login_or_register(email, "Test1234!", "Isolation Tester")
+    tok, user = _login_or_register(email, "Seed-Fleet-2026!", "Isolation Tester")
     yield {"token": tok, "email": email, "user_id": user["user_id"]}
 
 

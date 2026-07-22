@@ -1,9 +1,9 @@
 import { useState } from "react";
-import api, { API } from "@/lib/api";
+import api from "@/lib/api";
+import { AuthedImage, openAuthedFile } from "@/lib/authedFile";
 import { Upload, FileText, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
-const authUrl = (fileId) => `${API}/files/${fileId}?auth=${localStorage.getItem("token") || ""}`;
 const isImage = (ct) => (ct || "").startsWith("image/");
 
 export function FileUpload({ attachments = [], onChange, testid = "file-upload", accept = "image/*,application/pdf", label = "Upload photos / scans (image or PDF)" }) {
@@ -55,7 +55,7 @@ export function FileUpload({ attachments = [], onChange, testid = "file-upload",
           {attachments.map((a, i) => (
             <div key={a.file_id} className="relative group border border-slate-200 rounded-md overflow-hidden w-20 h-20 bg-slate-50 flex items-center justify-center">
               {isImage(a.content_type) ? (
-                <img src={authUrl(a.file_id)} alt={a.filename} className="object-cover w-full h-full" />
+                <AuthedImage fileId={a.file_id} alt={a.filename} className="object-cover w-full h-full" />
               ) : (
                 <FileText size={26} className="text-slate-400" />
               )}
@@ -80,20 +80,19 @@ export function AttachmentThumbs({ attachments = [] }) {
   return (
     <div className="flex flex-wrap gap-2 mt-3" data-testid="attachment-thumbs">
       {attachments.map((a) => (
-        <a
+        <button
           key={a.file_id}
-          href={authUrl(a.file_id)}
-          target="_blank"
-          rel="noopener noreferrer"
+          type="button"
+          onClick={() => openAuthedFile(a.file_id)}
           className="block border border-slate-200 rounded-md overflow-hidden w-16 h-16 bg-slate-50 flex items-center justify-center hover:border-slate-400 transition-colors"
           title={a.filename}
         >
           {isImage(a.content_type) ? (
-            <img src={authUrl(a.file_id)} alt={a.filename} className="object-cover w-full h-full" />
+            <AuthedImage fileId={a.file_id} alt={a.filename} className="object-cover w-full h-full" />
           ) : (
             <FileText size={22} className="text-slate-400" />
           )}
-        </a>
+        </button>
       ))}
     </div>
   );

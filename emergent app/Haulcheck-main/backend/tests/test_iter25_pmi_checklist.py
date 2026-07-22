@@ -5,7 +5,7 @@ import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 MANAGER_EMAIL = "manager@haulcheck.co.uk"
-MANAGER_PWD = "Test1234!"
+MANAGER_PWD = "Seed-Fleet-2026!"
 
 
 @pytest.fixture(scope="module")

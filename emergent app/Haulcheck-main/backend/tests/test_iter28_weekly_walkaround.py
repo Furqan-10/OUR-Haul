@@ -29,7 +29,7 @@ if not BASE_URL:
 assert BASE_URL, "REACT_APP_BACKEND_URL is required"
 
 MANAGER_EMAIL = "manager@haulcheck.co.uk"
-MANAGER_PASSWORD = "Test1234!"
+MANAGER_PASSWORD = "Seed-Fleet-2026!"
 
 
 def _monday_iso(d=None):

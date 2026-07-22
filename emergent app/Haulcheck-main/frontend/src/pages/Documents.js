@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { openAuthedFile } from "@/lib/authedFile";
 import api, { API } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -114,7 +115,7 @@ export function DocumentsPanel({ embedded = false }) {
                     <a data-testid="doc-link-button" href={d.link_url} target="_blank" rel="noopener noreferrer" title="Open web link" className="text-slate-400 hover:text-slate-900 p-1"><Link2 size={15} /></a>
                   )}
                   {d.attachments?.length > 0 && (
-                    <a data-testid="view-document-button" href={`${API}/files/${d.attachments[0].file_id}?auth=${localStorage.getItem("token") || ""}`} target="_blank" rel="noopener noreferrer" title="View / download" className="text-slate-400 hover:text-slate-900 p-1"><Eye size={15} /></a>
+                    <button data-testid="view-document-button" type="button" onClick={() => openAuthedFile(d.attachments[0].file_id)} title="View / download" className="text-slate-400 hover:text-slate-900 p-1"><Eye size={15} /></button>
                   )}
                   {d.letter_data && (
                     <button data-testid="regenerate-document-button" onClick={() => openRegen(d)} title="Edit / regenerate" className="text-slate-400 hover:text-slate-900 p-1"><RefreshCw size={15} /></button>

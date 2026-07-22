@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { openAuthedFile } from "@/lib/authedFile";
 import driverApi from "@/lib/driverApi";
 import { CHECKLIST, buildChecklist } from "@/pages/Walkaround";
 import { SignaturePad } from "@/components/SignaturePad";
@@ -16,7 +17,8 @@ const STATUS = {
   unknown: "bg-slate-500/15 text-slate-300 border-slate-500/30",
 };
 const statusLabel = { valid: "Valid", due_soon: "Due soon", expired: "Expired", unknown: "—" };
-const fileUrl = (id) => `${process.env.REACT_APP_BACKEND_URL}/api/driver/files/${id}?auth=${localStorage.getItem("driver_token")}`;
+// Files are fetched with the token in a header, never in the URL.
+const openDriverFile = (id) => openAuthedFile(id, { driver: true });
 
 // ---------- Install to home screen ----------
 function InstallPrompt() {
@@ -475,11 +477,14 @@ function DriverCompliance({ profile, back }) {
       ) : (
         <div className="space-y-2">
           {profile.documents.map((d) => (
-            <a key={d.id} data-testid="driver-document" href={d.attachments?.[0]?.file_id ? fileUrl(d.attachments[0].file_id) : "#"} target="_blank" rel="noreferrer" className="flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl p-3 active:scale-[0.98]">
+            <button key={d.id} data-testid="driver-document" type="button"
+              disabled={!d.attachments?.[0]?.file_id}
+              onClick={() => openDriverFile(d.attachments[0].file_id)}
+              className="w-full text-left flex items-center gap-3 bg-slate-900 border border-slate-800 rounded-xl p-3 active:scale-[0.98] disabled:opacity-50">
               <FileText size={18} className="text-slate-400 shrink-0" />
               <div className="min-w-0 flex-1"><p className="text-sm font-semibold truncate">{d.title}</p><p className="text-xs text-slate-500">{d.doc_type}</p></div>
               <ChevronRight size={18} className="text-slate-600" />
-            </a>
+            </button>
           ))}
         </div>
       )}

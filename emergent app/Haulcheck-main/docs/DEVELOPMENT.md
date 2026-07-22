@@ -103,6 +103,18 @@ feature are unavailable locally; everything else works. Both are wrapped in
 The suites in `backend/tests/` are **integration tests, not unit tests** — they
 drive a live backend over HTTP. MongoDB *and* the API must already be running.
 
+> **Run the API with `TRUST_PROXY_HEADERS=1` for the test suite.**
+> `tests/test_auth_hardening.py` gives each test its own client IP via an
+> `X-Forwarded-For` header so a test that deliberately trips a rate limit does
+> not lock out its neighbours. That header is only honoured when proxy headers
+> are trusted:
+> ```bash
+> ENVIRONMENT=development TRUST_PROXY_HEADERS=1 \
+>   .venv/Scripts/python -m uvicorn server:app --reload --port 8000
+> ```
+> In production, set `TRUST_PROXY_HEADERS=1` only when the app is behind a proxy
+> that overwrites the header (see `backend/security.py`).
+
 ```bash
 cd "emergent app/Haulcheck-main/backend"
 .venv/Scripts/python -m pytest -n 0                        # serial (deterministic)

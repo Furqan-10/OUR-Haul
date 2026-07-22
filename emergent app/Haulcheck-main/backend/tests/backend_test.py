@@ -27,7 +27,7 @@ if not BASE_URL:
 API = f"{BASE_URL}/api"
 
 SEED_EMAIL = "manager@haulcheck.co.uk"
-SEED_PASSWORD = "Test1234!"
+SEED_PASSWORD = "Seed-Fleet-2026!"
 
 
 # ---------- Fixtures ----------
@@ -57,7 +57,7 @@ def auth_headers(token):
 class TestAuth:
     def test_register_new_user(self):
         email = f"TEST_{uuid.uuid4().hex[:8]}@haulcheck.co.uk"
-        r = requests.post(f"{API}/auth/register", json={"email": email, "password": "Password1!", "name": "TEST User"}, timeout=15)
+        r = requests.post(f"{API}/auth/register", json={"email": email, "password": "Strong-Pass-26!", "name": "TEST User"}, timeout=15)
         assert r.status_code == 200, r.text
         body = r.json()
         assert "token" in body and isinstance(body["token"], str) and len(body["token"]) > 20
@@ -66,9 +66,9 @@ class TestAuth:
 
     def test_register_duplicate_email(self):
         email = f"TEST_{uuid.uuid4().hex[:8]}@haulcheck.co.uk"
-        r1 = requests.post(f"{API}/auth/register", json={"email": email, "password": "Password1!", "name": "Dup"}, timeout=15)
+        r1 = requests.post(f"{API}/auth/register", json={"email": email, "password": "Strong-Pass-26!", "name": "Dup"}, timeout=15)
         assert r1.status_code == 200
-        r2 = requests.post(f"{API}/auth/register", json={"email": email, "password": "Password1!", "name": "Dup"}, timeout=15)
+        r2 = requests.post(f"{API}/auth/register", json={"email": email, "password": "Strong-Pass-26!", "name": "Dup"}, timeout=15)
         assert r2.status_code == 400
 
     def test_login_seed_account(self, token):
@@ -567,7 +567,7 @@ class TestFileUpload:
 
         # Fresh user
         email = f"TEST_uf_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
-        rB = requests.post(f"{API}/auth/register", json={"email": email, "password": "Password1!", "name": "B"}, timeout=15)
+        rB = requests.post(f"{API}/auth/register", json={"email": email, "password": "Strong-Pass-26!", "name": "B"}, timeout=15)
         tokB = rB.json()["token"]
         r = requests.get(f"{API}/files/{file_id}", params={"auth": tokB}, timeout=15)
         assert r.status_code == 404  # scoped to owner
@@ -622,8 +622,8 @@ class TestIsolation:
         # Create two fresh users; user A creates a vehicle; user B should not see it.
         emailA = f"TEST_iso_a_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
         emailB = f"TEST_iso_b_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
-        rA = requests.post(f"{API}/auth/register", json={"email": emailA, "password": "Password1!", "name": "A"}, timeout=15)
-        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Password1!", "name": "B"}, timeout=15)
+        rA = requests.post(f"{API}/auth/register", json={"email": emailA, "password": "Strong-Pass-26!", "name": "A"}, timeout=15)
+        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Strong-Pass-26!", "name": "B"}, timeout=15)
         assert rA.status_code == 200 and rB.status_code == 200
         hA = {"Authorization": f"Bearer {rA.json()['token']}"}
         hB = {"Authorization": f"Bearer {rB.json()['token']}"}
@@ -782,7 +782,7 @@ class TestInsurance:
 class TestRegion:
     def test_default_region_is_uk_on_register(self):
         email = f"TEST_region_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
-        r = requests.post(f"{API}/auth/register", json={"email": email, "password": "Password1!", "name": "TEST Region"}, timeout=15)
+        r = requests.post(f"{API}/auth/register", json={"email": email, "password": "Strong-Pass-26!", "name": "TEST Region"}, timeout=15)
         assert r.status_code == 200
         tok = r.json()["token"]
         me = requests.get(f"{API}/auth/me", headers={"Authorization": f"Bearer {tok}"}, timeout=15).json()
@@ -813,8 +813,8 @@ class TestRegion:
     def test_insurance_isolation_between_users(self):
         emailA = f"TEST_ins_a_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
         emailB = f"TEST_ins_b_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
-        rA = requests.post(f"{API}/auth/register", json={"email": emailA, "password": "Password1!", "name": "A"}, timeout=15)
-        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Password1!", "name": "B"}, timeout=15)
+        rA = requests.post(f"{API}/auth/register", json={"email": emailA, "password": "Strong-Pass-26!", "name": "A"}, timeout=15)
+        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Strong-Pass-26!", "name": "B"}, timeout=15)
         hA = {"Authorization": f"Bearer {rA.json()['token']}"}
         hB = {"Authorization": f"Bearer {rB.json()['token']}"}
         r = requests.post(f"{API}/insurance", json={"policy_type": "Green Card", "insurer": "TEST-Iso", "expiry_date": FUTURE_VALID}, headers=hA, timeout=15)
@@ -972,8 +972,8 @@ class TestTacho:
     def test_isolation_between_users(self):
         emailA = f"TEST_tac_a_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
         emailB = f"TEST_tac_b_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
-        rA = requests.post(f"{API}/auth/register", json={"email": emailA, "password": "Password1!", "name": "A"}, timeout=15)
-        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Password1!", "name": "B"}, timeout=15)
+        rA = requests.post(f"{API}/auth/register", json={"email": emailA, "password": "Strong-Pass-26!", "name": "A"}, timeout=15)
+        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Strong-Pass-26!", "name": "B"}, timeout=15)
         hA = {"Authorization": f"Bearer {rA.json()['token']}", "Content-Type": "application/json"}
         hB = {"Authorization": f"Bearer {rB.json()['token']}", "Content-Type": "application/json"}
         r = requests.post(f"{API}/tacho", json={"source_type": "Driver Card", "reference": f"TEST_iso_{uuid.uuid4().hex[:4]}", "frequency_days": 28, "last_download": date.today().isoformat()}, headers=hA, timeout=15)
@@ -1056,7 +1056,7 @@ class TestTachoParse:
         file_id = r.json()["file_id"]
         # B tries to parse
         emailB = f"TEST_tp_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
-        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Password1!", "name": "B"}, timeout=15)
+        rB = requests.post(f"{API}/auth/register", json={"email": emailB, "password": "Strong-Pass-26!", "name": "B"}, timeout=15)
         tokB = rB.json()["token"]
         r = requests.post(f"{API}/tacho/parse", json={"file_id": file_id}, headers={"Authorization": f"Bearer {tokB}", "Content-Type": "application/json"}, timeout=15)
         assert r.status_code == 404

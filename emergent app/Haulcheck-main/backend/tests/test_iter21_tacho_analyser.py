@@ -28,7 +28,7 @@ BASE_URL = _load_url()
 API = f"{BASE_URL}/api"
 
 EMAIL = "manager@haulcheck.co.uk"
-PASSWORD = "Test1234!"
+PASSWORD = "Seed-Fleet-2026!"
 
 
 def _png_bytes(text_hint: str = "tacho") -> bytes:

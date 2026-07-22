@@ -36,7 +36,7 @@ Run all commands from `backend/` or `frontend/` inside `emergent app/Haulcheck-m
 - `pytest` — run the backend suite
 
 ### Backend tests are integration tests, not unit tests
-`backend/tests/*` hit a **live running backend** over HTTP at `REACT_APP_BACKEND_URL` (falls back to reading `/app/frontend/.env`). They require the API + MongoDB to be up. They use a seed manager account `manager@haulcheck.co.uk` / `Test1234!` (auto-registered if missing).
+`backend/tests/*` hit a **live running backend** over HTTP at `REACT_APP_BACKEND_URL` (falls back to reading `/app/frontend/.env`). They require the API + MongoDB to be up. They use a seed manager account `manager@haulcheck.co.uk` / `Seed-Fleet-2026!` (auto-registered if missing). The password was lengthened from the old `Test1234!` when the password policy moved to a 12-character minimum (Phase 2 auth hardening) — registration now rejects passwords under 12 chars or matching a weak-pattern blocklist (see `backend/security.py`).
 - `pytest.ini` pins `addopts = -n 2 --dist loadscope` (pytest-xdist). **Do not modify `addopts`** — the comment block explains why (shared preview backend, per-class worker pinning).
 - Run **serially** with `pytest -n 0` (NOT `-p no:xdist`, which errors).
 - Single test: `pytest tests/backend_test.py::TestAuth::test_login_seed_account -n 0`

@@ -25,7 +25,7 @@ if not BASE_URL:
             break
 API = f"{BASE_URL}/api"
 SEED_EMAIL = "manager@haulcheck.co.uk"
-SEED_PASSWORD = "Test1234!"
+SEED_PASSWORD = "Seed-Fleet-2026!"
 
 TODAY = date.today().isoformat()
 FUTURE_VALID = (date.today() + timedelta(days=120)).isoformat()
@@ -304,7 +304,7 @@ class TestGapDetection:
     def test_gap_checklist_covers_new_areas(self, h):
         # Create an isolated user so we know exactly which gaps to expect
         email = f"TEST_gap_{uuid.uuid4().hex[:6]}@haulcheck.co.uk"
-        r = requests.post(f"{API}/auth/register", json={"email": email, "password": "Password1!", "name": "TEST Gap"}, timeout=15)
+        r = requests.post(f"{API}/auth/register", json={"email": email, "password": "Strong-Pass-26!", "name": "TEST Gap"}, timeout=15)
         assert r.status_code == 200
         hh = {"Authorization": f"Bearer {r.json()['token']}", "Content-Type": "application/json"}
 

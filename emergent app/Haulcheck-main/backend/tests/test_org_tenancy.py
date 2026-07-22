@@ -20,7 +20,7 @@ import requests
 from conftest import _resolve_base_url
 
 API = f"{_resolve_base_url()}/api"
-PASSWORD = "Passw0rd!23"
+PASSWORD = "Org-Tenant-2026!"
 TIMEOUT = 20
 
 

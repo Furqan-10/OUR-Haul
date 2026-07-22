@@ -24,6 +24,9 @@ from tacho_engine import parse_ddd, parse_ddd_last_timestamp, detect_ddd_infring
 import reports
 import tenancy
 from tenancy import tenant_filter, stamp, require_role, ROLE_VIEWER, ROLE_MANAGER, ROLE_OWNER
+import security
+import audit
+import admin_routes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -176,6 +179,7 @@ class User(BaseModel):
     org_id: str = ""
     org_role: str = tenancy.ROLE_OWNER
     platform_role: str = tenancy.PLATFORM_ROLE_USER
+    email_verified: bool = True
     # Set only while a platform admin is impersonating; carries the admin's
     # user_id so every action can be attributed to them in the audit log.
     impersonated_by: Optional[str] = None
@@ -852,24 +856,54 @@ class TestHistoryInput(BaseModel):
 
 
 # ---------- Auth ----------
-def create_jwt(user_id: str) -> str:
-    payload = {"user_id": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7)}
+def create_jwt(user_id: str, token_version: int = 0, impersonated_by: Optional[str] = None) -> str:
+    """Issue a manager session token.
+
+    `tv` carries the account's token_version. Bumping that column invalidates
+    every token already issued -- the only way to revoke a stateless JWT before
+    it expires. Previously, deactivating a member cleared their cookie sessions
+    but left any bearer token working until it aged out.
+    """
+    payload = {"user_id": user_id, "tv": token_version,
+               "exp": datetime.now(timezone.utc) + timedelta(days=7)}
+    if impersonated_by:
+        payload["impersonated_by"] = impersonated_by
+        # Support access is short-lived; it is for diagnosing a problem, not
+        # for holding a standing key to a customer's account.
+        payload["exp"] = datetime.now(timezone.utc) + timedelta(minutes=60)
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
 _CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 
+# Newly issued codes are 8 characters, not 6. 31^8 is ~852 billion versus
+# ~887 million -- roughly a thousandfold larger keyspace for two extra
+# characters. Codes already in drivers' hands keep working at their current
+# length; the attempt limiter is what protects those.
+DRIVER_CODE_LENGTH = 8
+
+
 async def _generate_driver_code() -> str:
     for _ in range(20):
-        code = "".join(secrets.choice(_CODE_CHARS) for _ in range(6))
+        code = "".join(secrets.choice(_CODE_CHARS) for _ in range(DRIVER_CODE_LENGTH))
         if not await db.drivers.find_one({"access_code": code}):
             return code
-    return "".join(secrets.choice(_CODE_CHARS) for _ in range(8))
+    return "".join(secrets.choice(_CODE_CHARS) for _ in range(DRIVER_CODE_LENGTH + 2))
 
 
-def create_driver_jwt(driver_id: str, owner_id: str) -> str:
+def create_driver_jwt(driver_id: str, owner_id: str, code_version: int = 0) -> str:
+    """Issue a driver token.
+
+    The 30-day lifetime is kept: drivers use this on a phone at the roadside,
+    and forcing a re-login mid-week would push them towards skipping the
+    walkaround record altogether. `code_version` is what makes that safe -- it
+    is bumped whenever the access code is rotated or revoked, which invalidates
+    every token issued against the previous code immediately, so a lost handset
+    no longer means 30 days of exposure.
+    """
     payload = {"driver_id": driver_id, "user_id": owner_id, "role": "driver",
+               "cv": code_version,
                "exp": datetime.now(timezone.utc) + timedelta(days=30)}
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -888,6 +922,12 @@ async def get_current_driver(request: Request) -> dict:
     driver = await db.drivers.find_one({"id": payload.get("driver_id")}, {"_id": 0})
     if not driver:
         raise HTTPException(status_code=401, detail="Driver not found")
+    # Rotating or revoking the access code bumps code_version, which retires
+    # every token minted against the old code.
+    if payload.get("cv", 0) != driver.get("code_version", 0):
+        raise HTTPException(status_code=401, detail="Your access code has changed. Please log in again.")
+    if not driver.get("access_code"):
+        raise HTTPException(status_code=401, detail="Your access has been withdrawn. Contact your transport manager.")
     # Drivers write into their operator's records, so they carry org context
     # exactly like a manager does. A driver record predating the backfill has no
     # org_id, so resolve it from the owning user rather than failing the login.
@@ -1015,7 +1055,10 @@ async def _authenticate(cookie_token: Optional[str], bearer: Optional[str]) -> O
             payload = jwt.decode(bearer, JWT_SECRET, algorithms=["HS256"])
             if payload.get("role") != "driver":
                 user_doc = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
-                if user_doc and user_doc.get("active", True):
+                # A token whose version is behind the account's has been
+                # revoked -- by a password reset, a deactivation, or an admin.
+                if user_doc and user_doc.get("active", True) \
+                        and payload.get("tv", 0) == user_doc.get("token_version", 0):
                     return await _build_user(user_doc, payload.get("impersonated_by"))
         except jwt.PyJWTError:
             pass
@@ -1077,6 +1120,9 @@ tenancy.register_current_user_dependency(get_current_user)
 @api_router.post("/auth/register")
 async def register(data: RegisterInput, response: Response):
     email = data.email.lower().strip()
+    # Registration previously applied no password rule at all -- a single
+    # character was accepted.
+    security.require_valid_password(data.password, email=email, name=data.name)
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -1093,13 +1139,17 @@ async def register(data: RegisterInput, response: Response):
         # Platform administration is never grantable through the API. It is set
         # only by scripts/grant_admin.py, so self-registration cannot reach it.
         "platform_role": tenancy.PLATFORM_ROLE_USER,
+        # Self-registered accounts start unverified. This is surfaced in the UI
+        # as a prompt to confirm the address; it does not currently block use.
+        "email_verified": False,
     }
     await db.users.insert_one(dict(user_doc))
     # Every account owns an organisation from the moment it exists, so no
     # request can ever run without tenant context.
     org = await ensure_org_for_user(user_doc)
+    await _send_verification_email(user_id, email, data.name)
     response.delete_cookie("session_token", path="/")
-    token = create_jwt(user_id)
+    token = create_jwt(user_id, 0)
     return {"token": token, "user": {"user_id": user_id, "email": email, "name": data.name,
                                      "role": data.role, "region": org.get("region", "UK"),
                                      "org_id": org["org_id"], "org_role": ROLE_OWNER}}
@@ -1223,7 +1273,13 @@ async def set_member_status(iid: str, payload: dict, user: User = Depends(get_cu
     if not member:
         raise HTTPException(status_code=404, detail="Member account not found")
     active = bool(payload.get("active", True))
-    await db.users.update_one({"user_id": member["user_id"]}, {"$set": {"active": active}})
+    update = {"$set": {"active": active}}
+    if not active:
+        # Clearing cookie sessions alone left any bearer JWT working until it
+        # expired -- up to seven more days of access for someone just
+        # suspended. Bumping token_version revokes those immediately.
+        update["$inc"] = {"token_version": 1}
+    await db.users.update_one({"user_id": member["user_id"]}, update)
     if not active:
         await db.user_sessions.delete_many({"user_id": member["user_id"]})
     return {"ok": True, "active": active}
@@ -1249,8 +1305,7 @@ async def accept_invite(data: AcceptInviteInput, response: Response):
     email = inv["email"]
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email already registered")
-    if len(data.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    security.require_valid_password(data.password, email=email, name=data.name)
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     user_doc = {
         "user_id": user_id, "email": email, "name": data.name, "role": "manager",
@@ -1289,7 +1344,7 @@ async def accept_invite(data: AcceptInviteInput, response: Response):
     await db.invitations.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": now_iso(), "accepted_user_id": user_id}})
     org_doc = await db.organisations.find_one({"org_id": org_id}, {"_id": 0}) or {}
     response.delete_cookie("session_token", path="/")
-    return {"token": create_jwt(user_id),
+    return {"token": create_jwt(user_id, 0),
             "user": {"user_id": user_id, "email": email, "name": data.name, "role": "manager",
                      "region": org_doc.get("region", "UK"), "org_id": org_id, "org_role": role}}
 
@@ -1422,12 +1477,25 @@ async def update_operator(data: OperatorInput, user: User = Depends(get_current_
 
 
 @api_router.post("/auth/login")
-async def login(data: LoginInput, response: Response):
-    user_doc = await db.users.find_one({"email": data.email.lower().strip()})
-    if not user_doc or not user_doc.get("password_hash"):
+async def login(data: LoginInput, response: Response, request: Request):
+    email = data.email.lower().strip()
+    ip = security.client_ip(request)
+    # Checked before the password comparison, so a locked-out attacker never
+    # reaches it. Limiting the account as well as the address stops a
+    # distributed attempt from grinding one inbox.
+    await security.check_rate_limit(db, "login_ip", ip)
+    await security.check_rate_limit(db, "login_email", email)
+
+    user_doc = await db.users.find_one({"email": email})
+    if not user_doc or not user_doc.get("password_hash") or \
+            not pwd_context.verify(data.password, user_doc["password_hash"]):
+        await security.record_failure(db, "login_ip", ip)
+        await security.record_failure(db, "login_email", email)
+        # One message for "no such account" and "wrong password" alike, so the
+        # response cannot be used to enumerate which addresses are registered.
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not pwd_context.verify(data.password, user_doc["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    await security.clear_failures(db, "login_ip", ip)
+    await security.clear_failures(db, "login_email", email)
     if user_doc.get("active", True) is False:
         raise HTTPException(status_code=403, detail="Your account has been deactivated. Please contact the operator who invited you.")
     org = await ensure_org_for_user(user_doc)
@@ -1437,7 +1505,7 @@ async def login(data: LoginInput, response: Response):
         {"org_id": org["org_id"], "user_id": user_doc["user_id"]}, {"_id": 0})
     await db.users.update_one({"user_id": user_doc["user_id"]}, {"$set": {"last_login_at": now_iso()}})
     response.delete_cookie("session_token", path="/")
-    token = create_jwt(user_doc["user_id"])
+    token = create_jwt(user_doc["user_id"], user_doc.get("token_version", 0))
     return {"token": token, "user": {"user_id": user_doc["user_id"], "email": user_doc["email"],
                                      "name": user_doc["name"], "role": user_doc.get("role", "manager"),
                                      "org_id": org["org_id"], "region": org.get("region", "UK"),
@@ -1498,10 +1566,74 @@ async def reset_password(data: ResetPasswordInput):
     rec = await db.password_reset_tokens.find_one({"token": data.token})
     if not rec or rec.get("used") or rec["expires_at"] < now_iso():
         raise HTTPException(status_code=400, detail="This reset link is invalid or has expired")
-    if len(data.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
-    await db.users.update_one({"user_id": rec["user_id"]}, {"$set": {"password_hash": pwd_context.hash(data.password)}})
+    security.require_valid_password(data.password, email=rec.get("email", ""))
+    # Bumping token_version retires every session issued before the reset. A
+    # password reset is the action taken *because* an account may be
+    # compromised, so leaving the attacker's existing token valid for up to
+    # seven more days would defeat the point.
+    await db.users.update_one(
+        {"user_id": rec["user_id"]},
+        {"$set": {"password_hash": pwd_context.hash(data.password)}, "$inc": {"token_version": 1}})
+    await db.user_sessions.delete_many({"user_id": rec["user_id"]})
     await db.password_reset_tokens.update_one({"token": data.token}, {"$set": {"used": True, "used_at": now_iso()}})
+    return {"ok": True}
+
+
+# ---------- Email verification ----------
+async def _send_verification_email(user_id: str, email: str, name: str, base_url: str = "") -> None:
+    """Issue a verification token and email a confirmation link.
+
+    Best-effort, exactly like the invitation and password-reset emails: a send
+    failure is logged, never raised, so registration succeeds even when email
+    is not configured (as it is not in local development).
+    """
+    token = secrets.token_urlsafe(32)
+    await db.email_verification_tokens.insert_one({
+        "token": token, "user_id": user_id, "email": email, "used": False,
+        "created_at": now_iso(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=3)).isoformat(),
+    })
+    link = f"{(base_url or '').rstrip('/')}/verify-email?token={token}"
+    html = (
+        "<div style='background:#f1f5f9;padding:32px 0;font-family:Arial,Helvetica,sans-serif;'>"
+        "<table role='presentation' width='560' align='center' cellpadding='0' cellspacing='0' style='background:#fff;border-radius:12px;padding:32px;margin:0 auto;'>"
+        "<tr><td><p style='margin:0;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#64748b;font-weight:700;'>HaulCheck Compliance</p>"
+        "<h1 style='margin:6px 0 0;font-size:22px;color:#0f172a;'>Confirm your email</h1>"
+        f"<p style='margin:16px 0 0;font-size:14px;color:#334155;line-height:1.6;'>Hi {name or 'there'}, please confirm this address to secure your HaulCheck account.</p>"
+        f"<p style='margin:24px 0;'><a href='{link}' style='background:#0f172a;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:600;'>Confirm email</a></p>"
+        f"<p style='margin:8px 0 0;font-size:12px;color:#94a3b8;'>Or paste this link: {link}</p>"
+        "<p style='margin:16px 0 0;font-size:12px;color:#94a3b8;'>This link expires in 3 days.</p>"
+        "</td></tr></table></div>"
+    )
+    try:
+        import resend
+        resend.api_key = os.environ['RESEND_API_KEY']
+        await asyncio.to_thread(resend.Emails.send, {
+            "from": os.environ['SENDER_EMAIL'], "to": [email],
+            "subject": "Confirm your HaulCheck email", "html": html,
+        })
+    except Exception as e:
+        logging.error(f"Verification email failed: {e}")
+
+
+@api_router.post("/auth/verify-email")
+async def verify_email(payload: dict):
+    token = (payload or {}).get("token", "")
+    rec = await db.email_verification_tokens.find_one({"token": token})
+    if not rec or rec.get("used") or rec["expires_at"] < now_iso():
+        raise HTTPException(status_code=400, detail="This confirmation link is invalid or has expired")
+    await db.users.update_one({"user_id": rec["user_id"]}, {"$set": {"email_verified": True}})
+    await db.email_verification_tokens.update_one({"token": token}, {"$set": {"used": True, "used_at": now_iso()}})
+    return {"ok": True}
+
+
+@api_router.post("/auth/resend-verification")
+async def resend_verification(request: Request, user: User = Depends(get_current_user)):
+    fresh = await db.users.find_one({"user_id": user.user_id}, {"_id": 0})
+    if fresh and fresh.get("email_verified"):
+        return {"ok": True, "already_verified": True}
+    base_url = request.headers.get("origin", "")
+    await _send_verification_email(user.user_id, user.email, user.name, base_url)
     return {"ok": True}
 
 
@@ -1657,10 +1789,19 @@ async def upload_file(file: UploadFile = File(...), user: User = Depends(get_cur
 
 
 @api_router.get("/files/{file_id}")
-async def download_file(file_id: str, request: Request, auth: Optional[str] = Query(None)):
+async def download_file(file_id: str, request: Request):
+    """Serve an attachment.
+
+    The session token is accepted only from the Authorization header or the
+    session cookie. It used to be accepted from an `?auth=` query parameter as
+    well, so `<img>` and `<a>` tags could reach protected files -- but a
+    credential in a URL is recorded by proxy and access logs, kept in browser
+    history, and forwarded in the Referer header. The frontend now fetches
+    these as blobs (see lib/authedFile.js), which keeps the token in a header.
+    """
     cookie_token = request.cookies.get("session_token")
     header_auth = request.headers.get("Authorization")
-    bearer = (header_auth.split(" ", 1)[1] if header_auth and header_auth.startswith("Bearer ") else None) or auth
+    bearer = header_auth.split(" ", 1)[1] if header_auth and header_auth.startswith("Bearer ") else None
     user = await _authenticate(cookie_token, bearer)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1721,13 +1862,19 @@ async def issue_driver_code(did: str, user: User = Depends(get_current_user)):
     if not driver:
         raise HTTPException(status_code=404, detail="Driver not found")
     code = await _generate_driver_code()
-    await db.drivers.update_one({"id": did, **tenant_filter(user)}, {"$set": {"access_code": code}})
+    # Bumping the version invalidates any token still held against the old code,
+    # so re-issuing after a lost phone takes effect immediately.
+    await db.drivers.update_one(
+        {"id": did, **tenant_filter(user)},
+        {"$set": {"access_code": code}, "$inc": {"code_version": 1}})
     return {"ok": True, "access_code": code}
 
 
 @api_router.delete("/drivers/{did}/access-code")
 async def revoke_driver_code(did: str, user: User = Depends(get_current_user)):
-    await db.drivers.update_one({"id": did, **tenant_filter(user)}, {"$set": {"access_code": ""}})
+    await db.drivers.update_one(
+        {"id": did, **tenant_filter(user)},
+        {"$set": {"access_code": ""}, "$inc": {"code_version": 1}})
     return {"ok": True}
 
 
@@ -1844,14 +1991,41 @@ def _driver_profile(driver: dict) -> dict:
 
 
 @api_router.post("/driver/login")
-async def driver_login(payload: dict):
+async def driver_login(payload: dict, request: Request):
+    """Exchange a driver access code for a token.
+
+    The code is matched across the whole platform -- a driver types only their
+    code, with no company identifier, and that stays true here so no driver's
+    routine changes. What makes it safe is the attempt limit: guessing is an
+    online attack, and an online attack that gets 8 tries per 15 minutes is not
+    viable against even the legacy 6-character codes.
+
+    Both the source address and the submitted code are limited. Limiting the IP
+    alone would let a distributed attacker grind one code; limiting the code
+    alone would let one host sweep the keyspace.
+    """
     code = (payload.get("code") or "").strip().upper()
     if not code:
         raise HTTPException(status_code=400, detail="Enter your access code")
+
+    ip = security.client_ip(request)
+    await security.check_rate_limit(db, "driver_login_ip", ip)
+    await security.check_rate_limit(db, "driver_login_code", code)
+
     driver = await db.drivers.find_one({"access_code": code}, {"_id": 0})
     if not driver:
+        await security.record_failure(db, "driver_login_ip", ip)
+        await security.record_failure(db, "driver_login_code", code)
+        logging.warning(f"Failed driver login from {ip}")
         raise HTTPException(status_code=401, detail="Invalid access code")
-    token = create_driver_jwt(driver["id"], driver["user_id"])
+
+    org = await db.organisations.find_one({"org_id": driver.get("org_id")}, {"_id": 0})
+    if org and not org.get("active", True):
+        raise HTTPException(status_code=403, detail="This account is not active")
+
+    await security.clear_failures(db, "driver_login_ip", ip)
+    await security.clear_failures(db, "driver_login_code", code)
+    token = create_driver_jwt(driver["id"], driver["user_id"], driver.get("code_version", 0))
     return {"token": token, "driver": _driver_profile(driver)}
 
 
@@ -1967,14 +2141,20 @@ async def driver_tacho_analyse(payload: dict, driver: dict = Depends(get_current
 
 
 @api_router.get("/driver/files/{file_id}")
-async def driver_download_file(file_id: str, request: Request, auth: Optional[str] = Query(None)):
+async def driver_download_file(file_id: str, request: Request):
+    """Serve an attachment to a driver. Header-only auth -- see download_file."""
     driver = None
-    token = auth or (request.headers.get("Authorization", "").split(" ", 1)[1] if request.headers.get("Authorization", "").startswith("Bearer ") else None)
+    header_auth = request.headers.get("Authorization", "")
+    token = header_auth.split(" ", 1)[1] if header_auth.startswith("Bearer ") else None
     if token:
         try:
             p = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
             if p.get("role") == "driver":
                 driver = await db.drivers.find_one({"id": p.get("driver_id")}, {"_id": 0})
+                # Honour code rotation here too, so a revoked driver cannot
+                # keep pulling the operator's documents.
+                if driver and p.get("cv", 0) != driver.get("code_version", 0):
+                    driver = None
         except jwt.PyJWTError:
             pass
     if not driver:
@@ -4683,10 +4863,46 @@ async def _build_account_pdf(user: User, include_files: bool):
 
 app.include_router(api_router)
 
+# Platform administration. Mounted separately from api_router because it is not
+# tenant-scoped: it deliberately reaches across every organisation, and keeping
+# it in its own module makes that boundary visible. configure() hands it the
+# shared database handle and auth helpers, avoiding a circular import.
+admin_routes.configure(db, get_current_user, create_jwt, pwd_context)
+app.include_router(admin_routes.router)
+
+def _cors_origins() -> list:
+    """Resolve the allowed browser origins.
+
+    `allow_origins=["*"]` together with `allow_credentials=True` is not a valid
+    combination: the CORS spec forbids the wildcard on credentialed requests, so
+    browsers reject it and Starlette silently echoes the caller's origin
+    instead -- which is every origin, with cookies attached. The previous
+    default was exactly that.
+
+    An explicit list is now required outside development. Failing to start is
+    the right response to an unset value here: a permissive fallback would be
+    invisible in production, whereas a startup error gets fixed immediately.
+    """
+    raw = (os.environ.get('CORS_ORIGINS') or '').strip()
+    origins = [o.strip() for o in raw.split(',') if o.strip()]
+    if not origins or '*' in origins:
+        if os.environ.get('ENVIRONMENT', 'development').lower().startswith('dev'):
+            logging.warning(
+                "CORS_ORIGINS is unset or '*'; allowing localhost only. "
+                "Set an explicit origin list before deploying."
+            )
+            return ["http://localhost:3000", "http://127.0.0.1:3000"]
+        raise RuntimeError(
+            "CORS_ORIGINS must list explicit origins (comma-separated) when the API "
+            "sends credentials. '*' is not permitted outside development."
+        )
+    return origins
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -4700,6 +4916,12 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 @app.on_event("startup")
 async def startup_event():
+    try:
+        await security.ensure_indexes(db)
+        await audit.ensure_indexes(db)
+        logger.info("Auth rate-limit and audit indexes ready")
+    except Exception as e:
+        logger.error(f"Auth index setup failed: {e}")
     try:
         init_storage()
         logger.info("Object storage initialized")

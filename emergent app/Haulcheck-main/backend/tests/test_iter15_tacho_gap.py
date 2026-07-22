@@ -30,7 +30,7 @@ if not BASE_URL:
 API = f"{BASE_URL}/api"
 
 SEED_EMAIL = "manager@haulcheck.co.uk"
-SEED_PASSWORD = "Test1234!"
+SEED_PASSWORD = "Seed-Fleet-2026!"
 
 
 def _headers(token):

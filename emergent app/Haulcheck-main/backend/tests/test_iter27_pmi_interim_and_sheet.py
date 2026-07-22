@@ -29,7 +29,7 @@ BASE_URL = _load_backend_url()
 API = f"{BASE_URL}/api"
 
 EMAIL = "manager@haulcheck.co.uk"
-PASSWORD = "Test1234!"
+PASSWORD = "Seed-Fleet-2026!"
 
 
 @pytest.fixture(scope="module")

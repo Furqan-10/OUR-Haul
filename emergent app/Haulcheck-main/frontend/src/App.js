@@ -18,6 +18,12 @@ import Team from "@/pages/Team";
 import Organisation from "@/pages/Organisation";
 import AcceptInvite from "@/pages/AcceptInvite";
 import ResetPassword from "@/pages/ResetPassword";
+import VerifyEmail from "@/pages/VerifyEmail";
+import AdminLayout from "@/pages/admin/AdminLayout";
+import AdminOverview from "@/pages/admin/AdminOverview";
+import AdminTenants from "@/pages/admin/AdminTenants";
+import AdminUsers from "@/pages/admin/AdminUsers";
+import AdminAudit from "@/pages/admin/AdminAudit";
 import DriverApp from "@/pages/driver/DriverApp";
 import { Truck } from "lucide-react";
 
@@ -45,9 +51,17 @@ function AppRouter() {
       <Route path="/driver" element={<DriverApp />} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/verify-email" element={<VerifyEmail />} />
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
       <Route path="/team" element={<Protected><Team /></Protected>} />
       <Route path="/organisation" element={<Protected><Organisation /></Protected>} />
+
+      {/* Platform administration. AdminLayout does its own guarding and
+          redirects non-admins away, mirroring the backend's 404. */}
+      <Route path="/admin" element={<AdminLayout><AdminOverview /></AdminLayout>} />
+      <Route path="/admin/organisations" element={<AdminLayout><AdminTenants /></AdminLayout>} />
+      <Route path="/admin/users" element={<AdminLayout><AdminUsers /></AdminLayout>} />
+      <Route path="/admin/audit" element={<AdminLayout><AdminAudit /></AdminLayout>} />
       <Route path="/operator" element={<Protected><Operator /></Protected>} />
       <Route path="/calendar" element={<Protected><Calendar /></Protected>} />
       <Route path="/maintenance" element={<Protected><Maintenance /></Protected>} />

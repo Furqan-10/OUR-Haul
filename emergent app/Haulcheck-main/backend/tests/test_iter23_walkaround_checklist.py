@@ -11,7 +11,7 @@ BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
 assert BASE_URL, "REACT_APP_BACKEND_URL must be set"
 
 EMAIL = "manager@haulcheck.co.uk"
-PASSWORD = "Test1234!"
+PASSWORD = "Seed-Fleet-2026!"
 
 CHECKLIST_SECTIONS = {
     "Internal Checks": [

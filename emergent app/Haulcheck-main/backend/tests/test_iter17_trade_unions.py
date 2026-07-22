@@ -24,7 +24,7 @@ BASE_URL = _base_url()
 API = f"{BASE_URL}/api"
 
 SEED_EMAIL = "manager@haulcheck.co.uk"
-SEED_PASSWORD = "Test1234!"
+SEED_PASSWORD = "Seed-Fleet-2026!"
 
 
 # ---------- Fixtures ----------
@@ -57,7 +57,7 @@ def second_user_headers(session):
     email = f"TEST_iso_{uuid.uuid4().hex[:8]}@haulcheck.co.uk"
     r = requests.post(
         f"{API}/auth/register",
-        json={"email": email, "password": "Password1!", "name": "TEST Iso"},
+        json={"email": email, "password": "Strong-Pass-26!", "name": "TEST Iso"},
         timeout=15,
     )
     assert r.status_code == 200

@@ -13,7 +13,7 @@ import requests
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL").rstrip("/")
 
 EMAIL = "manager@haulcheck.co.uk"
-PASSWORD = "Test1234!"
+PASSWORD = "Seed-Fleet-2026!"
 
 REPORT_KINDS = ["vehicles", "trailers", "drivers", "defects", "service", "wheel", "walkaround", "pmi"]
 

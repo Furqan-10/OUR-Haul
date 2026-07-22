@@ -18,6 +18,7 @@ Resolution order:
   3. http://localhost:8000, the default in frontend/.env.example.
 """
 import os
+import pytest
 from pathlib import Path
 
 DEFAULT_BASE_URL = "http://localhost:8000"
@@ -48,3 +49,41 @@ def _resolve_base_url() -> str:
 # Set before test modules are imported -- this is what makes the /app fallbacks
 # unreachable. Exported so tests spawned by xdist workers inherit it too.
 os.environ["REACT_APP_BACKEND_URL"] = _resolve_base_url()
+
+
+def pytest_configure(config):
+    """Refuse to run against anything that is not this backend.
+
+    Ports get squatted. A different application answering on :8000 returns 200
+    to a naive reachability probe, and the whole suite then fails in confusing
+    ways against software that has nothing to do with HaulCheck. Checking for a
+    known HaulCheck response turns that into one clear message.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    base = os.environ["REACT_APP_BACKEND_URL"]
+    url = f"{base}/api/auth/me"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            body, status = r.read(400), r.status
+    except urllib.error.HTTPError as e:          # 401 is the healthy answer
+        body, status = e.read(400), e.code
+    except Exception as e:
+        raise pytest.UsageError(
+            f"Cannot reach the HaulCheck API at {base} ({e}).\n"
+            f"Start it with:  cd backend && bash run-dev.sh"
+        )
+
+    try:
+        detail = json.loads(body).get("detail", "")
+    except Exception:
+        detail = ""
+    if status != 401 or "auth" not in detail.lower():
+        raise pytest.UsageError(
+            f"{url} answered {status} with an unexpected body -- this does not look "
+            f"like the HaulCheck API.\n"
+            f"Another application may be listening on that port. Expected 401 "
+            f'{{"detail": "Not authenticated"}}, got: {body[:120]!r}'
+        )
