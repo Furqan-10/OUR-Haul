@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
@@ -16,6 +16,16 @@ export default function Login() {
   const navigate = useNavigate();
 
   const [sentTo, setSentTo] = useState("");
+
+  // Which Google sign-in this deployment offers, if any. Asking the server
+  // rather than assuming means the button simply does not appear on a
+  // deployment that has not configured OAuth, instead of appearing and failing.
+  const [googleAuth, setGoogleAuth] = useState({ enabled: false, provider: null });
+  useEffect(() => {
+    api.get("/auth/google/config")
+      .then((res) => setGoogleAuth(res.data))
+      .catch(() => setGoogleAuth({ enabled: false, provider: null }));
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -40,10 +50,24 @@ export default function Login() {
     }
   };
 
-  const googleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + "/dashboard";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  const googleLogin = async () => {
+    if (googleAuth.provider === "emergent") {
+      // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+      const redirectUrl = window.location.origin + "/dashboard";
+      window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+      return;
+    }
+    // Standard OAuth: the server mints the state and builds the URL, so the
+    // CSRF token is never something the browser could choose.
+    setBusy(true);
+    try {
+      const redirect_uri = window.location.origin + "/auth/google/callback";
+      const res = await api.post("/auth/google/start", { redirect_uri });
+      window.location.href = res.data.authorization_url;
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not start Google sign-in");
+      setBusy(false);
+    }
   };
 
   return (
@@ -166,17 +190,21 @@ export default function Login() {
 
           {mode !== "forgot" && (
           <>
+          {googleAuth.enabled && (
+          <>
           <div className="flex items-center gap-3 my-6">
             <div className="h-px flex-1 bg-slate-200" />
             <span className="text-xs text-slate-400 uppercase tracking-widest">or</span>
             <div className="h-px flex-1 bg-slate-200" />
           </div>
 
-          <Button data-testid="google-login-button" onClick={googleLogin} variant="outline"
+          <Button data-testid="google-login-button" onClick={googleLogin} variant="outline" disabled={busy}
             className="w-full py-2.5 rounded-md font-semibold border-slate-300 flex items-center justify-center gap-2">
             <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="" className="w-5 h-5" />
             Continue with Google
           </Button>
+          </>
+          )}
 
           <p className="text-center text-sm text-slate-500 mt-6">
             Are you a driver?{" "}

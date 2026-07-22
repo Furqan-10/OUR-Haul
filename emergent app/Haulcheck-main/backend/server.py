@@ -13,11 +13,8 @@ from typing import List, Optional
 import uuid
 import jwt
 import httpx
-import requests
 import json
 import re
-import base64
-import tempfile
 from passlib.context import CryptContext
 from datetime import datetime, timezone, timedelta
 from pdf_export import build_report_pdf, merge_pack, build_letter_pdf, build_pmi_sheet_pdf, concat_pdfs, build_weekly_walkaround_pdf
@@ -30,6 +27,8 @@ import audit
 import admin_routes
 import indexes
 import scheduling
+import oauth
+from urllib.parse import urlparse
 from providers import storage as providers_storage, ai as providers_ai, email as providers_email
 
 ROOT_DIR = Path(__file__).parent
@@ -40,9 +39,20 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
-# Optional: absent means the null storage/AI providers are selected.
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
+# EMERGENT_LLM_KEY is no longer read here. Storage and AI each resolve their own
+# credentials inside `providers/`, so nothing outside that package names a
+# vendor -- which is the point of the abstraction. Absent, both select their
+# null provider and the app still starts.
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# The original Google sign-in ran through Emergent's shared demo backend. It is
+# kept working so an existing deployment does not break mid-migration, but it is
+# off by default: a new deployment should not route its users' identities
+# through a third party's demo environment without explicitly choosing to. Set
+# ENABLE_EMERGENT_OAUTH=1 to re-advertise it, or configure GOOGLE_CLIENT_ID /
+# GOOGLE_CLIENT_SECRET to use Google directly (the supported path).
+EMERGENT_OAUTH_FALLBACK = (os.environ.get('ENABLE_EMERGENT_OAUTH', '')
+                           .strip().lower() in ('1', 'true', 'yes'))
 
 # ---------- Object storage ----------
 # Backed by providers/storage.py. These wrappers keep the original names so
@@ -1483,6 +1493,18 @@ async def login(data: LoginInput, response: Response, request: Request):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     await security.clear_failures(db, "login_ip", ip)
     await security.clear_failures(db, "login_email", email)
+    return await _complete_login(user_doc, response)
+
+
+async def _complete_login(user_doc: dict, response: Response) -> dict:
+    """Everything between "the credential checked out" and "here is a session".
+
+    Shared by password login and Google sign-in. Both must apply the same
+    suspension checks -- an account or organisation that has been suspended
+    cannot be allowed back in simply by using the other door, and keeping these
+    rules in one place is what stops a later change to them landing on only one
+    path.
+    """
     if user_doc.get("active", True) is False:
         raise HTTPException(status_code=403, detail="Your account has been deactivated. Please contact the operator who invited you.")
     org = await ensure_org_for_user(user_doc)
@@ -1491,6 +1513,8 @@ async def login(data: LoginInput, response: Response, request: Request):
     membership = await db.org_members.find_one(
         {"org_id": org["org_id"], "user_id": user_doc["user_id"]}, {"_id": 0})
     await db.users.update_one({"user_id": user_doc["user_id"]}, {"$set": {"last_login_at": now_iso()}})
+    # A stale Google-session cookie must not outlive a fresh login (see the
+    # bearer-over-cookie precedence in `_authenticate`).
     response.delete_cookie("session_token", path="/")
     token = create_jwt(user_doc["user_id"], user_doc.get("token_version", 0))
     return {"token": token, "user": {"user_id": user_doc["user_id"], "email": user_doc["email"],
@@ -1614,6 +1638,72 @@ async def resend_verification(request: Request, user: User = Depends(get_current
     base_url = request.headers.get("origin", "")
     await _send_verification_email(user.user_id, user.email, user.name, base_url)
     return {"ok": True}
+
+
+# ---------- Google sign-in ----------
+# Two implementations coexist. `/auth/google/*` talks to Google directly using
+# this deployment's own OAuth client and is the supported path. `/auth/session`
+# below is the original Emergent-hosted exchange, kept as a fallback so an
+# existing deployment keeps working until its operator creates a Google client.
+@api_router.get("/auth/google/config")
+async def google_config():
+    """Lets the login page decide which button, if any, to show."""
+    return {"enabled": oauth.is_configured() or bool(EMERGENT_OAUTH_FALLBACK),
+            "provider": "google" if oauth.is_configured() else "emergent"}
+
+
+@api_router.post("/auth/google/start")
+async def google_start(payload: dict):
+    redirect_uri = (payload or {}).get("redirect_uri", "").strip()
+    if not redirect_uri:
+        raise HTTPException(status_code=400, detail="redirect_uri is required")
+    # Only redirect back to an origin this deployment serves. Without this an
+    # open redirect would let an attacker have Google deliver an authorization
+    # code to a host they control.
+    if not _is_allowed_redirect(redirect_uri):
+        raise HTTPException(status_code=400, detail="redirect_uri is not an allowed origin")
+    try:
+        return {"authorization_url": await oauth.begin(db, redirect_uri)}
+    except oauth.OAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api_router.post("/auth/google/callback")
+async def google_callback(payload: dict, response: Response, request: Request):
+    code = (payload or {}).get("code", "").strip()
+    state = (payload or {}).get("state", "").strip()
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state")
+
+    # Rated per address: the token exchange is an outbound call to Google, so an
+    # unlimited endpoint is both an abuse vector and a way to burn quota.
+    await security.check_rate_limit(db, "login_ip", security.client_ip(request))
+    try:
+        profile = await oauth.complete(db, code, state)
+    except oauth.OAuthError as e:
+        await security.record_failure(db, "login_ip", security.client_ip(request))
+        raise HTTPException(status_code=401, detail=str(e))
+    await security.clear_failures(db, "login_ip", security.client_ip(request))
+
+    email = profile["email"]
+    user_doc = await db.users.find_one({"email": email})
+    if not user_doc:
+        user_doc = {
+            "user_id": f"user_{uuid.uuid4().hex[:12]}", "email": email,
+            "name": profile["name"], "role": "manager", "picture": profile.get("picture"),
+            "created_at": now_iso(), "platform_role": tenancy.PLATFORM_ROLE_USER,
+            # Google has already proven the address (checked in oauth.py), so
+            # there is nothing for the user to verify a second time.
+            "email_verified": True,
+            "google_sub": profile.get("google_sub"),
+        }
+        await db.users.insert_one(dict(user_doc))
+    elif not user_doc.get("google_sub"):
+        # Record the link on an account that was created with a password.
+        await db.users.update_one({"user_id": user_doc["user_id"]},
+                                  {"$set": {"google_sub": profile.get("google_sub"),
+                                            "email_verified": True}})
+    return await _complete_login(user_doc, response)
 
 
 @api_router.post("/auth/session")
@@ -2331,7 +2421,6 @@ async def draft_document(data: LetterDraftInput, user: User = Depends(get_curren
     guide = LETTER_GUIDES.get(data.template, f"a formal '{data.template}' business letter")
     company = op.get("company_name") or "the company"
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
         system = (
             "You are a UK road-haulage HR and compliance assistant. You draft professional, legally-sensible "
             "business letters for a transport operator. Use British English, a formal but human tone. "
@@ -2344,8 +2433,9 @@ async def draft_document(data: LetterDraftInput, user: User = Depends(get_curren
             f"Recipient: {data.recipient_name or 'the employee'}.\n"
             f"Context / key points to include:\n{data.points or '(no specific points provided — write a sensible standard version)'}"
         )
-        chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"letter_{uuid.uuid4().hex[:8]}", system_message=system).with_model("openai", "gpt-5.4")
-        resp = await chat.send_message(UserMessage(text=prompt))
+        resp = await providers_ai.get_provider().chat(
+            system, prompt,
+            session_id=f"letter_{uuid.uuid4().hex[:8]}", model_hint="openai:gpt-5.4")
         text = resp if isinstance(resp, str) else str(resp)
         m = re.search(r"\{.*\}", text, re.DOTALL)
         parsed = json.loads(m.group(0)) if m else {"subject": data.template, "body": text}
@@ -2854,7 +2944,6 @@ def is_combined_liability(text: str) -> bool:
 
 
 async def ai_extract_insurance(file_bytes: bytes, mime: str, ext: str):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent, FileContentWithMimeType
     system = (
         "You read UK & Ireland commercial vehicle insurance documents (certificates, schedules, cover notes) "
         "and extract structured data. Classify policy_type as EXACTLY one of: " + ", ".join(INSURANCE_TYPES) + ". "
@@ -2868,21 +2957,19 @@ async def ai_extract_insurance(file_bytes: bytes, mime: str, ext: str):
         "needs_review (true if you are unsure or the document is unclear). No prose, no code fences."
     )
     prompt = "Extract the insurance policy details from this document."
-    tmp_path = None
+    # Images go to a vision model, PDFs to a long-context one -- the original
+    # split, preserved. The provider spills non-image input to a temp file and
+    # cleans it up, so there is no file handling left here.
+    is_image = (mime or "").startswith("image/")
     try:
-        if (mime or "").startswith("image/"):
-            b64 = base64.b64encode(file_bytes).decode("utf-8")
-            chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"ins_{uuid.uuid4().hex[:8]}", system_message=system).with_model("openai", "gpt-4o")
-            msg = UserMessage(text=prompt, file_contents=[ImageContent(b64)])
-        else:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}")
-            tmp.write(file_bytes)
-            tmp.flush()
-            tmp.close()
-            tmp_path = tmp.name
-            chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"ins_{uuid.uuid4().hex[:8]}", system_message=system).with_model("gemini", "gemini-2.5-flash")
-            msg = UserMessage(text=prompt, file_contents=[FileContentWithMimeType(mime or "application/pdf", tmp_path)])
-        resp = await chat.send_message(msg)
+        resp = await providers_ai.get_provider().chat(
+            system, prompt,
+            files=[providers_ai.FileInput(
+                content=file_bytes,
+                content_type=mime or "application/pdf",
+                filename=f"insurance.{ext}")],
+            session_id=f"ins_{uuid.uuid4().hex[:8]}",
+            model_hint="openai:gpt-4o" if is_image else "gemini:gemini-2.5-flash")
         text = (resp if isinstance(resp, str) else str(resp)).strip()
         if text.startswith("```"):
             text = text.strip("`")
@@ -2893,9 +2980,6 @@ async def ai_extract_insurance(file_bytes: bytes, mime: str, ext: str):
     except Exception as ex:
         logging.error(f"AI insurance extract failed: {ex}")
         return None
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
 
 
 @api_router.post("/insurance/ai-import")
@@ -3082,28 +3166,22 @@ async def run_tacho_analysis(data: bytes, mime: str, ext: str, region: str, driv
 
 
 async def ai_extract_tacho(file_bytes: bytes, mime: str, ext: str):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent, FileContentWithMimeType
     system = (
         "You read tachograph analysis reports and driver-card/vehicle-unit printouts. Extract: "
         "last_download (the most recent download date or card-read/print date, YYYY-MM-DD or null) and "
         "infringements (integer count of infringements/violations/offences noted, else 0). "
         "Return ONLY minified JSON {\"last_download\": ..., \"infringements\": ..., \"confidence\": 0-1}. No prose."
     )
-    tmp_path = None
+    is_image = (mime or "").startswith("image/")
     try:
-        if (mime or "").startswith("image/"):
-            b64 = base64.b64encode(file_bytes).decode("utf-8")
-            chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"tac_{uuid.uuid4().hex[:8]}", system_message=system).with_model("openai", "gpt-4o")
-            msg = UserMessage(text="Extract tacho details from this report.", file_contents=[ImageContent(b64)])
-        else:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}")
-            tmp.write(file_bytes)
-            tmp.flush()
-            tmp.close()
-            tmp_path = tmp.name
-            chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"tac_{uuid.uuid4().hex[:8]}", system_message=system).with_model("gemini", "gemini-2.5-flash")
-            msg = UserMessage(text="Extract tacho details from this report.", file_contents=[FileContentWithMimeType(mime or "application/pdf", tmp_path)])
-        resp = await chat.send_message(msg)
+        resp = await providers_ai.get_provider().chat(
+            system, "Extract tacho details from this report.",
+            files=[providers_ai.FileInput(
+                content=file_bytes,
+                content_type=mime or "application/pdf",
+                filename=f"tacho.{ext}")],
+            session_id=f"tac_{uuid.uuid4().hex[:8]}",
+            model_hint="openai:gpt-4o" if is_image else "gemini:gemini-2.5-flash")
         text = (resp if isinstance(resp, str) else str(resp)).strip()
         if text.startswith("```"):
             text = text.strip("`")
@@ -3114,9 +3192,6 @@ async def ai_extract_tacho(file_bytes: bytes, mime: str, ext: str):
     except Exception as ex:
         logging.error(f"AI tacho extract failed: {ex}")
         return None
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
 
 
 @api_router.post("/tacho/parse")
@@ -3136,7 +3211,6 @@ async def parse_tacho(payload: TachoParseInput, user: User = Depends(get_current
 
 
 async def ai_analyse_tacho(file_bytes: bytes, mime: str, ext: str, region: str, driver_name: str):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent, FileContentWithMimeType
     is_ie = (region or "UK").upper() in ("IE", "IRELAND", "RSA")
     rules = (
         "EU Regulation (EC) 561/2006 drivers' hours rules as enforced by the RSA in Ireland"
@@ -3158,21 +3232,21 @@ async def ai_analyse_tacho(file_bytes: bytes, mime: str, ext: str, region: str, 
         "summary saying so. No prose outside the JSON."
     )
     hint = f"Driver: {driver_name}. " if driver_name else ""
-    tmp_path = None
+    is_image = (mime or "").startswith("image/")
+    # The two branches described the input differently ("printout" for a photo,
+    # "report" for a PDF). Kept, because it is the more accurate word in each
+    # case and the model sees it.
+    noun = "printout" if is_image else "report"
     try:
-        if (mime or "").startswith("image/"):
-            b64 = base64.b64encode(file_bytes).decode("utf-8")
-            chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"tana_{uuid.uuid4().hex[:8]}", system_message=system).with_model("openai", "gpt-4o")
-            msg = UserMessage(text=f"{hint}Analyse this tachograph printout for drivers' hours infringements.", file_contents=[ImageContent(b64)])
-        else:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}")
-            tmp.write(file_bytes)
-            tmp.flush()
-            tmp.close()
-            tmp_path = tmp.name
-            chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"tana_{uuid.uuid4().hex[:8]}", system_message=system).with_model("gemini", "gemini-2.5-flash")
-            msg = UserMessage(text=f"{hint}Analyse this tachograph report for drivers' hours infringements.", file_contents=[FileContentWithMimeType(mime or "application/pdf", tmp_path)])
-        resp = await chat.send_message(msg)
+        resp = await providers_ai.get_provider().chat(
+            system,
+            f"{hint}Analyse this tachograph {noun} for drivers' hours infringements.",
+            files=[providers_ai.FileInput(
+                content=file_bytes,
+                content_type=mime or "application/pdf",
+                filename=f"tacho.{ext}")],
+            session_id=f"tana_{uuid.uuid4().hex[:8]}",
+            model_hint="openai:gpt-4o" if is_image else "gemini:gemini-2.5-flash")
         text = (resp if isinstance(resp, str) else str(resp)).strip()
         if text.startswith("```"):
             text = text.strip("`")
@@ -3183,9 +3257,6 @@ async def ai_analyse_tacho(file_bytes: bytes, mime: str, ext: str, region: str, 
     except Exception as ex:
         logging.error(f"AI tacho analyse failed: {ex}")
         return None
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
 
 
 @api_router.post("/tacho/analyse")
@@ -3370,14 +3441,10 @@ async def tacho_analysis_report(aid: str, user: User = Depends(get_current_user)
 # ---------- Defects ----------
 async def summarise_defect(description: str, severity: str) -> str:
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"defect_{uuid.uuid4().hex[:8]}",
-            system_message="You are a UK road haulage compliance assistant. Summarise vehicle defect reports into one concise professional line, note if it is safety-critical (roadworthiness), and recommend an action. Keep under 40 words.",
-        ).with_model("openai", "gpt-5.4")
-        msg = UserMessage(text=f"Severity: {severity}. Defect: {description}")
-        resp = await chat.send_message(msg)
+        resp = await providers_ai.get_provider().chat(
+            "You are a UK road haulage compliance assistant. Summarise vehicle defect reports into one concise professional line, note if it is safety-critical (roadworthiness), and recommend an action. Keep under 40 words.",
+            f"Severity: {severity}. Defect: {description}",
+            session_id=f"defect_{uuid.uuid4().hex[:8]}", model_hint="openai:gpt-5.4")
         return resp if isinstance(resp, str) else str(resp)
     except Exception as e:
         logging.error(f"AI summary failed: {e}")
@@ -4370,18 +4437,15 @@ async def ai_risk_insight(user: User = Depends(get_current_user)):
     region_note = ("This operator is in IRELAND (RSA/CVRT rules). Do NOT recommend laden brake tests or DVSA-specific requirements; use RSA/CVRT terminology (CVRT, CRW)."
                    if is_ie else "This operator is in the UK (DVSA rules); use DVSA terminology (MOT, safety inspections with laden roller brake test).")
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"risk_{uuid.uuid4().hex[:8]}",
-            system_message="You are a UK & Ireland operator-licence compliance auditor for road haulage operators (DVSA in the UK, RSA in Ireland). Given fleet stats, outstanding alerts and detected record gaps, write a concise audit briefing (max 110 words) for a transport manager: state the biggest risks to the operator licence and the top prioritised actions, explicitly calling out the most important MISSING records/documents. Only reference gaps that are actually in the provided data — do not invent requirements. Be direct and practical.",
-        ).with_model("openai", "gpt-5.4")
         prompt = (f"{region_note} "
                   f"Compliance score: {score}/100. Vehicles: {c['vehicles']}, Drivers: {c['drivers']}, "
                   f"Documents: {c['documents']}, Insurance: {c.get('insurance', 0)}, Tacho: {c.get('tacho', 0)}. "
                   f"Expired: {c['expired']}, Due soon: {c['due_soon']}, Open defects: {c['open_defects']} (major {c['major_defects']}). "
                   f"Top alerts: {alert_text}. Detected gaps: {gap_text}.")
-        resp = await chat.send_message(UserMessage(text=prompt))
+        resp = await providers_ai.get_provider().chat(
+            "You are a UK & Ireland operator-licence compliance auditor for road haulage operators (DVSA in the UK, RSA in Ireland). Given fleet stats, outstanding alerts and detected record gaps, write a concise audit briefing (max 110 words) for a transport manager: state the biggest risks to the operator licence and the top prioritised actions, explicitly calling out the most important MISSING records/documents. Only reference gaps that are actually in the provided data — do not invent requirements. Be direct and practical.",
+            prompt,
+            session_id=f"risk_{uuid.uuid4().hex[:8]}", model_hint="openai:gpt-5.4")
         insight = resp if isinstance(resp, str) else str(resp)
     except Exception as e:
         logging.error(f"AI risk insight failed: {e}")
@@ -4913,10 +4977,31 @@ def _cors_origins() -> list:
     return origins
 
 
+ALLOWED_ORIGINS = _cors_origins()
+
+
+def _is_allowed_redirect(redirect_uri: str) -> bool:
+    """True when `redirect_uri` points at an origin this deployment serves.
+
+    Google will POST an authorization code to whatever redirect URI the request
+    asked for. Accepting an arbitrary one turns this endpoint into an open
+    redirect that hands attacker-controlled hosts a valid code, so the origin is
+    matched against the same list that governs CORS -- one place to configure,
+    and no way for the two to disagree.
+    """
+    try:
+        parsed = urlparse(redirect_uri)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    return f"{parsed.scheme}://{parsed.netloc}" in ALLOWED_ORIGINS
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=_cors_origins(),
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -4934,6 +5019,7 @@ async def startup_event():
         await security.ensure_indexes(db)
         await audit.ensure_indexes(db)
         await scheduling.ensure_indexes(db)
+        await oauth.ensure_indexes(db)
         result = await indexes.ensure_indexes(db)
         logger.info(f"Indexes ready: {result['created']} created/verified"
                     + (f", {len(result['failed'])} FAILED" if result["failed"] else ""))

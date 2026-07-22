@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import AuthCallback from "@/components/AuthCallback";
+import GoogleCallback from "@/components/GoogleCallback";
 import Layout from "@/components/Layout";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
@@ -48,6 +49,9 @@ function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      {/* Standard Google OAuth return. The Emergent flow instead comes back
+          with a #session_id hash and is handled above, before routing. */}
+      <Route path="/auth/google/callback" element={<GoogleCallback />} />
       <Route path="/driver" element={<DriverApp />} />
       <Route path="/accept-invite" element={<AcceptInvite />} />
       <Route path="/reset-password" element={<ResetPassword />} />

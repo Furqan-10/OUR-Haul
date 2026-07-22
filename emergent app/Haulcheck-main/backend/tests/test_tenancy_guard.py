@@ -57,6 +57,9 @@ IDENTITY_COLLECTIONS = {
     "audit_log",
     "auth_attempts",
     "job_locks",
+    # In-flight OAuth state, consumed once during sign-in -- it exists before
+    # any organisation has been resolved.
+    "oauth_states",
 }
 
 

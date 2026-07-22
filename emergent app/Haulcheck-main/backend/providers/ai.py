@@ -62,6 +62,9 @@ class EmergentLLM(AIProvider):
             )
 
         import base64
+        import os as _os
+        import tempfile
+
         chat = LlmChat(api_key=self.key, session_id=session_id or "haulcheck",
                        system_message=system)
         # Preserves the original model selection: images to a vision model,
@@ -71,16 +74,33 @@ class EmergentLLM(AIProvider):
             provider, _, model = model_hint.partition(":")
         chat = chat.with_model(provider, model)
 
-        contents = []
-        for f in files or []:
-            if f.content_type.startswith("image/"):
-                contents.append(ImageContent(
-                    image_base64=base64.b64encode(f.content).decode()))
-            else:
-                contents.append(FileContentWithMimeType(
-                    file_path=f.filename, mime_type=f.content_type))
-        message = UserMessage(text=user, file_contents=contents or None)
-        return await chat.send_message(message)
+        # `FileContentWithMimeType` reads from disk, so non-image input has to be
+        # spilled to a temp file. Doing it here rather than at the call sites
+        # keeps `FileInput` uniformly bytes-based -- callers should not have to
+        # know that one provider wants a path and another wants base64, nor
+        # repeat the cleanup. Anything written here is removed in `finally`.
+        contents, temps = [], []
+        try:
+            for f in files or []:
+                if f.content_type.startswith("image/"):
+                    contents.append(ImageContent(
+                        image_base64=base64.b64encode(f.content).decode()))
+                else:
+                    suffix = _os.path.splitext(f.filename)[1] or ".pdf"
+                    fd, path = tempfile.mkstemp(suffix=suffix)
+                    with _os.fdopen(fd, "wb") as fh:
+                        fh.write(f.content)
+                    temps.append(path)
+                    contents.append(FileContentWithMimeType(
+                        file_path=path, mime_type=f.content_type or "application/pdf"))
+            message = UserMessage(text=user, file_contents=contents or None)
+            return await chat.send_message(message)
+        finally:
+            for path in temps:
+                try:
+                    _os.unlink(path)
+                except OSError:
+                    pass
 
 
 class AnthropicAI(AIProvider):
