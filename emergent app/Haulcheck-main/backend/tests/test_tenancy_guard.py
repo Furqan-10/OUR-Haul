@@ -56,6 +56,7 @@ IDENTITY_COLLECTIONS = {
     # Platform-level records that deliberately span every tenant.
     "audit_log",
     "auth_attempts",
+    "job_locks",
 }
 
 
@@ -139,9 +140,16 @@ def test_every_org_collection_is_known():
     skipped by the backfill migration and ignored by this guard -- silently
     unscoped. Catch it here instead.
     """
+    # Attributes of the Motor/PyMongo database object itself. `db.command(...)`
+    # is a driver call, not a collection named "command".
+    DRIVER_ATTRS = {
+        "command", "client", "name", "list_collection_names", "create_collection",
+        "drop_collection", "aggregate", "watch", "get_collection", "with_options",
+        "validate_collection", "dereference", "list_collections",
+    }
     source = SERVER.read_text(encoding="utf-8")
     referenced = set(re.findall(r"\bdb\.(\w+)\b", source))
-    unknown = referenced - set(ORG_COLLECTIONS) - IDENTITY_COLLECTIONS
+    unknown = referenced - set(ORG_COLLECTIONS) - IDENTITY_COLLECTIONS - DRIVER_ATTRS
     assert not unknown, (
         "server.py uses collections that are neither tenant-scoped nor known "
         "identity collections:\n  "

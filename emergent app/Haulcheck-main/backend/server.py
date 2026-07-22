@@ -1,3 +1,4 @@
+from fastapi.responses import JSONResponse
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -27,6 +28,8 @@ from tenancy import tenant_filter, stamp, require_role, ROLE_VIEWER, ROLE_MANAGE
 import security
 import audit
 import admin_routes
+import indexes
+import scheduling
 from providers import storage as providers_storage, ai as providers_ai, email as providers_email
 
 ROOT_DIR = Path(__file__).parent
@@ -4572,6 +4575,7 @@ async def _process_weekly_user(org_id: str, recipients: list) -> int:
     return count
 
 
+@scheduling.run_once(lambda: db, "daily_reminders")
 async def run_daily_reminders():
     logger.info("Running daily reminder job")
     settings_list = await db.reminder_settings.find({"recipients": {"$exists": True, "$ne": []}}, {"_id": 0}).to_list(10000)
@@ -4586,6 +4590,7 @@ async def run_daily_reminders():
             logger.error(f"Daily reminder failed for {s.get('user_id')}: {e}")
 
 
+@scheduling.run_once(lambda: db, "weekly_reminders")
 async def run_weekly_reminders():
     logger.info("Running weekly reminder job")
     settings_list = await db.reminder_settings.find({"recipients": {"$exists": True, "$ne": []}}, {"_id": 0}).to_list(10000)
@@ -4836,6 +4841,40 @@ async def _build_account_pdf(user: User, include_files: bool):
     return pdf, fname
 
 
+@api_router.get("/health")
+async def health():
+    """Readiness probe for load balancers and deploy pipelines.
+
+    Reports the database round-trip and which provider each external service
+    resolved to. Returns 503 when MongoDB is unreachable so an orchestrator
+    stops routing traffic to a replica that cannot serve; a missing optional
+    provider is reported but does not fail the check, because the app is still
+    able to serve every non-AI, non-upload request without one.
+
+    Unauthenticated on purpose -- a probe has no credentials -- so it exposes
+    nothing beyond liveness and provider names.
+    """
+    checks, healthy = {}, True
+    started = datetime.now(timezone.utc)
+    try:
+        await db.command("ping")
+        checks["database"] = {
+            "ok": True,
+            "latency_ms": round((datetime.now(timezone.utc) - started).total_seconds() * 1000, 1),
+        }
+    except Exception as e:
+        checks["database"] = {"ok": False, "error": str(e)[:200]}
+        healthy = False
+
+    checks["providers"] = {
+        "storage": providers_storage.get_provider().name,
+        "ai": providers_ai.get_provider().name,
+        "email": providers_email.get_provider().name,
+    }
+    body = {"status": "ok" if healthy else "unhealthy", "checks": checks}
+    return body if healthy else JSONResponse(status_code=503, content=body)
+
+
 app.include_router(api_router)
 
 # Platform administration. Mounted separately from api_router because it is not
@@ -4894,9 +4933,20 @@ async def startup_event():
     try:
         await security.ensure_indexes(db)
         await audit.ensure_indexes(db)
-        logger.info("Auth rate-limit and audit indexes ready")
+        await scheduling.ensure_indexes(db)
+        result = await indexes.ensure_indexes(db)
+        logger.info(f"Indexes ready: {result['created']} created/verified"
+                    + (f", {len(result['failed'])} FAILED" if result["failed"] else ""))
+        # A unique index on users.email cannot exist while duplicates do, and
+        # duplicates mean two people can sign in to what should be one account.
+        dupes = await indexes.find_duplicate_emails(db)
+        if dupes:
+            logger.error(
+                f"{len(dupes)} duplicate email address(es) in users -- the unique "
+                f"index is not in force. Resolve with: "
+                f"{[d['_id'] for d in dupes[:5]]}")
     except Exception as e:
-        logger.error(f"Auth index setup failed: {e}")
+        logger.error(f"Index setup failed: {e}")
     # Report which backend each external service resolved to. Previously a
     # missing key produced only an opaque "Storage init failed" line; naming the
     # provider makes a misconfigured environment obvious at a glance.
