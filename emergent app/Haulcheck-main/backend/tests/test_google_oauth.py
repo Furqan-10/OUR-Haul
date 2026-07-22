@@ -201,13 +201,22 @@ class TestEndpoints:
         body = r.json()
         assert "enabled" in body and "provider" in body
 
-    def test_start_is_refused_when_unconfigured(self):
+    def test_start_behaves_according_to_how_the_server_is_configured(self):
+        """Asserts against the server's own reported state rather than assuming.
+
+        The suite runs both ways -- against a deployment with Google configured
+        and one without -- so hard-coding either outcome makes this test fail
+        for the wrong reason.
+        """
+        configured = requests.get(f"{API}/auth/google/config", timeout=10).json()
         r = requests.post(f"{API}/auth/google/start",
                           json={"redirect_uri": "http://localhost:3000/auth/google/callback"},
                           timeout=10)
-        # 400 either because OAuth is unconfigured or the origin is not allowed;
-        # both are refusals, and neither is a 500.
-        assert r.status_code == 400, r.text
+        if configured.get("provider") == "google" and configured.get("enabled"):
+            assert r.status_code == 200, r.text
+            assert r.json()["authorization_url"].startswith(oauth.AUTH_ENDPOINT)
+        else:
+            assert r.status_code == 400, r.text
 
     def test_a_foreign_redirect_uri_is_refused(self):
         """Open-redirect defence: Google must never be told to deliver an
@@ -226,3 +235,71 @@ class TestEndpoints:
                           json={"code": "abc", "state": f"bogus-{uuid.uuid4().hex}"},
                           timeout=10)
         assert r.status_code == 401
+
+
+class TestLoginCSRF:
+    """The callback must only complete in the browser that began the flow.
+
+    Without this, an attacker completes their own Google authorization inside a
+    victim's browser: the victim is silently signed in to the *attacker's*
+    account and every record they then enter -- vehicles, drivers, documents --
+    lands in an account the attacker controls. A single-use state does not stop
+    it, because the attacker spends the state exactly once, in the victim's
+    browser.
+    """
+
+    def test_a_callback_with_no_cookie_is_refused(self):
+        """The victim's browser never called /start, so it holds no cookie."""
+        state = f"attacker-supplied-{uuid.uuid4().hex}"
+        r = requests.post(f"{API}/auth/google/callback",
+                          json={"code": "attacker-code", "state": state},
+                          timeout=10)
+        assert r.status_code == 401, r.text
+        assert "browser" in r.json().get("detail", "").lower()
+
+    def test_a_callback_whose_cookie_disagrees_is_refused(self):
+        """A browser mid-flow of its own must not complete someone else's."""
+        session = requests.Session()
+        session.cookies.set("oauth_state", f"this-browsers-own-{uuid.uuid4().hex}")
+        r = session.post(f"{API}/auth/google/callback",
+                         json={"code": "attacker-code",
+                               "state": f"attackers-{uuid.uuid4().hex}"},
+                         timeout=10)
+        assert r.status_code == 401, r.text
+
+    def test_the_cookie_check_runs_before_the_state_is_consumed(self, configured):
+        """A forged callback must not burn a real in-flight sign-in.
+
+        If the state were consumed first, an attacker who learned a victim's
+        state could invalidate it and break their sign-in -- a denial of
+        service on top of the CSRF.
+        """
+        async def run():
+            db = _db()
+            await oauth.ensure_indexes(db)
+            url = await oauth.begin(db, "http://localhost:3000/auth/google/callback")
+            state = url.split("state=")[1].split("&")[0]
+
+            # Forged callback: right state, no matching cookie.
+            r = requests.post(f"{API}/auth/google/callback",
+                              json={"code": "forged", "state": state}, timeout=10)
+            assert r.status_code == 401
+
+            # The genuine state must still be there for the real browser.
+            still_there = await db.oauth_states.find_one({"state": state})
+            assert still_there is not None, (
+                "A forged callback consumed a legitimate state, which would "
+                "break the real user's sign-in.")
+            await db.oauth_states.delete_one({"state": state})
+        asyncio.run(run())
+
+    def test_start_sets_an_httponly_state_cookie(self):
+        """The cookie must be unreadable to script, or XSS could forge a flow."""
+        r = requests.post(f"{API}/auth/google/start",
+                          json={"redirect_uri": "http://localhost:3000/auth/google/callback"},
+                          timeout=10)
+        if r.status_code == 400:
+            pytest.skip("Google OAuth is not configured on the server under test")
+        cookie = r.headers.get("set-cookie", "")
+        assert "oauth_state=" in cookie
+        assert "HttpOnly" in cookie

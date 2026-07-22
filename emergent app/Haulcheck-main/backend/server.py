@@ -1653,7 +1653,7 @@ async def google_config():
 
 
 @api_router.post("/auth/google/start")
-async def google_start(payload: dict):
+async def google_start(payload: dict, response: Response):
     redirect_uri = (payload or {}).get("redirect_uri", "").strip()
     if not redirect_uri:
         raise HTTPException(status_code=400, detail="redirect_uri is required")
@@ -1663,9 +1663,17 @@ async def google_start(payload: dict):
     if not _is_allowed_redirect(redirect_uri):
         raise HTTPException(status_code=400, detail="redirect_uri is not an allowed origin")
     try:
-        return {"authorization_url": await oauth.begin(db, redirect_uri)}
+        url = await oauth.begin(db, redirect_uri)
     except oauth.OAuthError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # Bind the flow to this browser. Only the browser that started the sign-in
+    # can finish it, which is what stops an attacker completing their own
+    # authorization in someone else's session (see oauth.py).
+    state = url.split("state=")[1].split("&")[0]
+    response.set_cookie(key=oauth.STATE_COOKIE, value=state, httponly=True,
+                        secure=True, samesite="none", path="/",
+                        max_age=oauth.STATE_TTL_SECONDS)
+    return {"authorization_url": url}
 
 
 @api_router.post("/auth/google/callback")
@@ -1678,12 +1686,24 @@ async def google_callback(payload: dict, response: Response, request: Request):
     # Rated per address: the token exchange is an outbound call to Google, so an
     # unlimited endpoint is both an abuse vector and a way to burn quota.
     await security.check_rate_limit(db, "login_ip", security.client_ip(request))
+
+    # Checked before the state is consumed, so a forged callback cannot burn a
+    # legitimate in-flight sign-in belonging to someone else.
+    if not oauth.state_matches_cookie(request.cookies.get(oauth.STATE_COOKIE), state):
+        await security.record_failure(db, "login_ip", security.client_ip(request))
+        response.delete_cookie(oauth.STATE_COOKIE, path="/")
+        raise HTTPException(
+            status_code=401,
+            detail="This sign-in did not start in this browser. Please try again.")
+
     try:
         profile = await oauth.complete(db, code, state)
     except oauth.OAuthError as e:
         await security.record_failure(db, "login_ip", security.client_ip(request))
+        response.delete_cookie(oauth.STATE_COOKIE, path="/")
         raise HTTPException(status_code=401, detail=str(e))
     await security.clear_failures(db, "login_ip", security.client_ip(request))
+    response.delete_cookie(oauth.STATE_COOKIE, path="/")
 
     email = profile["email"]
     user_doc = await db.users.find_one({"email": email})
@@ -4138,15 +4158,23 @@ async def update_calendar_event(eid: str, data: CalendarEventInput, user: User =
 
 # ---------- Dashboard + AI risk ----------
 async def gather_stats(org_id: str):
-    vehicles = await db.vehicles.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    drivers = await db.drivers.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    documents = await db.documents.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    defects = await db.defects.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    pmi_schedules = await db.pmi_schedules.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    trailers = await db.trailers.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    training = await db.training.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    insurance = await db.insurance.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    tacho = await db.tacho.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
+    # These nine reads are independent, so they are issued together rather than
+    # one after another. Sequentially the dashboard paid nine full round trips
+    # before it could render; concurrently it pays roughly one, and the saving
+    # grows with network latency between the app and the database -- which is
+    # zero on a developer's laptop and very much not zero in production.
+    (vehicles, drivers, documents, defects, pmi_schedules,
+     trailers, training, insurance, tacho) = await asyncio.gather(
+        db.vehicles.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.drivers.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.documents.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.defects.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.pmi_schedules.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.trailers.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.training.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.insurance.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.tacho.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+    )
 
     alerts = []
     expired = due_soon = 0
@@ -4317,27 +4345,35 @@ async def compliance_history(days: int = 90, user: User = Depends(get_current_us
 
 
 async def detect_gaps(org_id: str):
-    vehicles = await db.vehicles.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    drivers = await db.drivers.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    documents = await db.documents.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    insurance = await db.insurance.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    pmi = await db.pmi_schedules.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    pmi_records = await db.pmi_records.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
-    tacho = await db.tacho.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    training = await db.training.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    wheel = await db.wheel_audits.find({"org_id": org_id}, {"_id": 0}).to_list(1000)
-    walkarounds = await db.walkaround_checks.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
-    test_history = await db.test_history.find({"org_id": org_id}, {"_id": 0}).to_list(2000)
-    # Jurisdiction is a property of the organisation. Reading it from `users`
-    # would pick an arbitrary member and, since region no longer lives there,
-    # would silently default every multi-member org to UK terminology.
-    org = await db.organisations.find_one({"org_id": org_id}, {"_id": 0}) or {}
+    # Thirteen independent reads, issued concurrently for the same reason as in
+    # `gather_stats`. Both run on every dashboard load, so between them this was
+    # around twenty sequential round trips per page.
+    (vehicles, drivers, documents, insurance, pmi, pmi_records, tacho,
+     training, wheel, walkarounds, test_history, org, operator) = await asyncio.gather(
+        db.vehicles.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.drivers.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.documents.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.insurance.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.pmi_schedules.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.pmi_records.find({"org_id": org_id}, {"_id": 0}).to_list(2000),
+        db.tacho.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.training.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.wheel_audits.find({"org_id": org_id}, {"_id": 0}).to_list(1000),
+        db.walkaround_checks.find({"org_id": org_id}, {"_id": 0}).to_list(2000),
+        db.test_history.find({"org_id": org_id}, {"_id": 0}).to_list(2000),
+        # Jurisdiction is a property of the organisation. Reading it from `users`
+        # would pick an arbitrary member and, since region no longer lives there,
+        # would silently default every multi-member org to UK terminology.
+        db.organisations.find_one({"org_id": org_id}, {"_id": 0}),
+        db.operator.find_one({"org_id": org_id}, {"_id": 0}),
+    )
+    org = org or {}
+    operator = operator or {}
     is_ie = org.get("region") == "IE"
     mot_label = "CVRT" if is_ie else "MOT"
     test_label = "CVRT test" if is_ie else "annual test"
 
     gaps = []
-    operator = await db.operator.find_one({"org_id": org_id}, {"_id": 0}) or {}
     if not operator.get("operator_licence_number"):
         gaps.append({"area": "Operator", "item": "No Operator Licence number recorded", "priority": "high"})
     if not operator.get("tm_name"):

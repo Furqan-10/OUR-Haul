@@ -15,9 +15,20 @@ existing deployment that has not migrated yet.
 ## Security notes
 
 **CSRF.** The `state` parameter is generated server-side, stored, and consumed
-exactly once. Without it an attacker can feed a victim a callback URL carrying
-the attacker's authorization code and silently link the attacker's Google
-account to the victim's session.
+exactly once -- *and* mirrored into an HttpOnly cookie that the callback must
+present back.
+
+Single-use alone does not stop login CSRF. An attacker can begin a sign-in
+themselves, obtain a genuine `code` and `state`, and then send a victim to
+`/auth/google/callback?code=...&state=...`. The state is spent exactly once, in
+the victim's browser, and the victim silently ends up signed in to the
+*attacker's* account -- after which every fleet record, driver detail and
+document they enter goes into an account the attacker controls. It is a data
+exfiltration route that looks, to the victim, like a normal working session.
+
+The cookie closes it: a browser that never called `begin()` holds no
+`oauth_state`, so the callback is refused. The attacker cannot plant it either,
+because it is set by this server, HttpOnly, on this deployment's own origin.
 
 **Unverified Google emails.** A sign-in whose `email_verified` claim is false is
 rejected. Some Google Workspace configurations can hold an address the user has
@@ -32,6 +43,7 @@ that constrain *who the token is for* (`aud`, `iss`, `exp`) are still checked,
 because those are what stop a token minted for a different application being
 replayed at this one.
 """
+import hmac
 import logging
 import os
 import secrets
@@ -48,6 +60,20 @@ VALID_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 
 # How long an in-flight sign-in may take between /start and /callback.
 STATE_TTL_SECONDS = 600
+
+# Name of the cookie that binds a callback to the browser that began the flow.
+STATE_COOKIE = "oauth_state"
+
+
+def state_matches_cookie(cookie_value: Optional[str], state: str) -> bool:
+    """Constant-time comparison of the callback's state against the cookie.
+
+    Constant-time because a timing side channel here would let an attacker
+    discover a valid state one character at a time.
+    """
+    if not cookie_value or not state:
+        return False
+    return hmac.compare_digest(cookie_value, state)
 
 
 class OAuthError(Exception):
