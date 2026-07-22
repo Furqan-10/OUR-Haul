@@ -109,6 +109,45 @@ def compliance_status(days: Optional[int], soon_days: int = 30) -> str:
 TACHO_SOON_DAYS = 7
 
 
+# ---------- Pagination ----------
+# The list endpoints returned `.to_list(1000)` (or 2000). Past that limit the
+# response was simply short, with nothing in it to say so: an operator with
+# 1,100 defects saw 1,000 and no indication that 100 were missing. For a
+# compliance product that is worse than an error, because the missing records
+# are invisible in exactly the audit the tool exists to support.
+#
+# `page()` keeps the response an array, so every existing caller is unaffected,
+# and adds:
+#   - optional ?limit= and ?offset= for callers that want to page;
+#   - an X-Total-Count header, so a caller can always tell what it did not get;
+#   - a server-side log when a response is truncated.
+# Switching a screen to real paging is then a frontend change, not an API break.
+DEFAULT_PAGE_SIZE = 1000
+MAX_PAGE_SIZE = 5000
+
+
+async def page(response: Response, cursor, collection, filt: dict,
+               limit: Optional[int] = None, offset: int = 0) -> list:
+    """Run a paged query and record the true total on the response."""
+    size = DEFAULT_PAGE_SIZE if limit is None else max(1, min(int(limit), MAX_PAGE_SIZE))
+    skip = max(0, int(offset or 0))
+
+    total, docs = await asyncio.gather(
+        collection.count_documents(filt),
+        cursor.skip(skip).limit(size).to_list(size),
+    )
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page-Offset"] = str(skip)
+    response.headers["X-Page-Limit"] = str(size)
+    if skip + len(docs) < total:
+        # Not an error -- the caller asked for a page. Logged so that a screen
+        # quietly showing a partial list is diagnosable from the server side.
+        logging.info(
+            f"{collection.name}: returned {len(docs)} of {total} "
+            f"(offset={skip}, limit={size})")
+    return docs
+
+
 # ---------- Models ----------
 class RegisterInput(BaseModel):
     email: EmailStr
@@ -2292,8 +2331,11 @@ async def delete_training(tid: str, user: User = Depends(get_current_user)):
 
 # ---------- Documents ----------
 @api_router.get("/documents")
-async def list_documents(user: User = Depends(get_current_user)):
-    docs = await db.documents.find(tenant_filter(user), {"_id": 0}).to_list(1000)
+async def list_documents(response: Response, user: User = Depends(get_current_user),
+                         limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    docs = await page(response, db.documents.find(filt, {"_id": 0}),
+                      db.documents, filt, limit, offset)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("expiry_date")))
         d["days_left"] = days_until(d.get("expiry_date"))
@@ -2569,6 +2611,11 @@ def _enrich_fuel(records: list) -> list:
 
 @api_router.get("/fuel")
 async def list_fuel(user: User = Depends(get_current_user)):
+    # Deliberately NOT paged. `_enrich_fuel` derives MPG from the odometer gap
+    # between consecutive fills for each vehicle, so a record is only meaningful
+    # alongside the one before it. Serving page 2 in isolation would leave its
+    # first fill with no predecessor and report wrong fuel economy -- a quietly
+    # incorrect number, which is worse here than a slow query.
     recs = await db.fuel.find(tenant_filter(user), {"_id": 0}).to_list(5000)
     return _enrich_fuel(recs)
 
@@ -3121,8 +3168,12 @@ def compute_next_due(last: Optional[str], days: int) -> Optional[str]:
 
 
 @api_router.get("/tacho")
-async def list_tacho(user: User = Depends(get_current_user)):
-    docs = await db.tacho.find(tenant_filter(user), {"_id": 0}).sort("next_due", 1).to_list(1000)
+async def list_tacho(response: Response, user: User = Depends(get_current_user),
+                     limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    docs = await page(response,
+                      db.tacho.find(filt, {"_id": 0}).sort("next_due", 1),
+                      db.tacho, filt, limit, offset)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("next_due")), soon_days=TACHO_SOON_DAYS)
         d["days_left"] = days_until(d.get("next_due"))
@@ -3472,9 +3523,11 @@ async def summarise_defect(description: str, severity: str) -> str:
 
 
 @api_router.get("/defects")
-async def list_defects(user: User = Depends(get_current_user)):
-    docs = await db.defects.find(tenant_filter(user), {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return docs
+async def list_defects(response: Response, user: User = Depends(get_current_user),
+                       limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    return await page(response, db.defects.find(filt, {"_id": 0}).sort("created_at", -1),
+                      db.defects, filt, limit, offset)
 
 
 @api_router.post("/defects")
@@ -3634,9 +3687,12 @@ async def interim_pmi(data: PMIInterimInput, user: User = Depends(get_current_us
 
 
 @api_router.get("/pmi/records")
-async def list_pmi_records(user: User = Depends(get_current_user)):
-    docs = await db.pmi_records.find(tenant_filter(user), {"_id": 0}).sort("inspection_date", -1).to_list(1000)
-    return docs
+async def list_pmi_records(response: Response, user: User = Depends(get_current_user),
+                           limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    return await page(response,
+                      db.pmi_records.find(filt, {"_id": 0}).sort("inspection_date", -1),
+                      db.pmi_records, filt, limit, offset)
 
 
 @api_router.delete("/pmi/records/{rid}")
@@ -3706,8 +3762,12 @@ async def pmi_history_report(pid: str, include_files: bool = Query(False), user:
 
 # ---------- Wheel Security Audits ----------
 @api_router.get("/wheel-audits")
-async def list_wheel_audits(user: User = Depends(get_current_user)):
-    docs = await db.wheel_audits.find(tenant_filter(user), {"_id": 0}).sort("audit_date", -1).to_list(1000)
+async def list_wheel_audits(response: Response, user: User = Depends(get_current_user),
+                            limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    docs = await page(response,
+                      db.wheel_audits.find(filt, {"_id": 0}).sort("audit_date", -1),
+                      db.wheel_audits, filt, limit, offset)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("next_due")))
         d["days_left"] = days_until(d.get("next_due"))
@@ -3737,8 +3797,12 @@ async def delete_wheel_audit(wid: str, user: User = Depends(get_current_user)):
 
 # ---------- Service records ----------
 @api_router.get("/service-records")
-async def list_service(user: User = Depends(get_current_user)):
-    docs = await db.service_records.find(tenant_filter(user), {"_id": 0}).sort("service_date", -1).to_list(1000)
+async def list_service(response: Response, user: User = Depends(get_current_user),
+                       limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    docs = await page(response,
+                      db.service_records.find(filt, {"_id": 0}).sort("service_date", -1),
+                      db.service_records, filt, limit, offset)
     for d in docs:
         d["status"] = compliance_status(days_until(d.get("next_service_due")))
         d["days_left"] = days_until(d.get("next_service_due"))
@@ -3768,8 +3832,12 @@ async def delete_service(sid: str, user: User = Depends(get_current_user)):
 
 # ---------- Daily Walkaround Checks ----------
 @api_router.get("/walkarounds")
-async def list_walkarounds(user: User = Depends(get_current_user)):
-    return await db.walkaround_checks.find(tenant_filter(user), {"_id": 0}).sort("check_date", -1).to_list(2000)
+async def list_walkarounds(response: Response, user: User = Depends(get_current_user),
+                           limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    return await page(response,
+                      db.walkaround_checks.find(filt, {"_id": 0}).sort("check_date", -1),
+                      db.walkaround_checks, filt, limit, offset)
 
 
 @api_router.post("/walkarounds")
@@ -3816,8 +3884,12 @@ async def _get_or_create_weekly(org_id: str, vehicle_reg: str, week_start: str, 
 
 
 @api_router.get("/weekly-walkarounds")
-async def list_weekly_walkarounds(user: User = Depends(get_current_user)):
-    return await db.weekly_walkarounds.find(tenant_filter(user), {"_id": 0}).sort("week_start", -1).to_list(2000)
+async def list_weekly_walkarounds(response: Response, user: User = Depends(get_current_user),
+                                  limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    return await page(response,
+                      db.weekly_walkarounds.find(filt, {"_id": 0}).sort("week_start", -1),
+                      db.weekly_walkarounds, filt, limit, offset)
 
 
 @api_router.post("/weekly-walkarounds")
@@ -3907,8 +3979,12 @@ async def driver_submit_weekly_day(data: WeeklyDayInput, driver: dict = Depends(
 
 # ---------- Test History / Prohibitions ----------
 @api_router.get("/test-history")
-async def list_test_history(user: User = Depends(get_current_user)):
-    return await db.test_history.find(tenant_filter(user), {"_id": 0}).sort("event_date", -1).to_list(2000)
+async def list_test_history(response: Response, user: User = Depends(get_current_user),
+                            limit: Optional[int] = None, offset: int = 0):
+    filt = tenant_filter(user)
+    return await page(response,
+                      db.test_history.find(filt, {"_id": 0}).sort("event_date", -1),
+                      db.test_history, filt, limit, offset)
 
 
 @api_router.post("/test-history")
