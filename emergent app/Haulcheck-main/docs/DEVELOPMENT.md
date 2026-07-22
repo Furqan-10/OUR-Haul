@@ -126,8 +126,10 @@ cd "emergent app/Haulcheck-main/backend"
   passes `-n`/`--dist`.
 - **Do not edit `addopts` in `pytest.ini`.** Its comment block explains the
   fixed two-worker `loadscope` pinning.
-- Tests share a seed account, `manager@haulcheck.co.uk` / `Test1234!`, and
-  register it automatically if missing. They also leave data behind by design —
+- Tests share a seed account, `manager@haulcheck.co.uk` / `Seed-Fleet-2026!`, and
+  register it automatically if missing. (The password was lengthened from the
+  old `Test1234!` when the minimum moved to 12 characters — see
+  `backend/security.py`.) They also leave data behind by design —
   to reset, drop the database:
   ```bash
   .venv/Scripts/python -c "from pymongo import MongoClient; MongoClient('mongodb://127.0.0.1:27017').drop_database('haulcheck')"
@@ -167,5 +169,6 @@ points elsewhere. Check `.data/mongod.log`.
 the frontend's exact origin, e.g. `http://localhost:3000`.
 
 **`RequestsDependencyWarning: urllib3 ... doesn't match a supported version`** —
-harmless; `requests` is only used for the Emergent object-store calls, which are
-being moved to async `httpx` in Phase 4.
+harmless. `requests` is no longer on any request path (object storage moved to
+async `httpx` in `backend/providers/storage.py`); the warning comes from a
+transitive dependency.
