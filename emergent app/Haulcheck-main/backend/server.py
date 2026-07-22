@@ -27,6 +27,7 @@ from tenancy import tenant_filter, stamp, require_role, ROLE_VIEWER, ROLE_MANAGE
 import security
 import audit
 import admin_routes
+from providers import storage as providers_storage, ai as providers_ai, email as providers_email
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -36,42 +37,31 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
-EMERGENT_LLM_KEY = os.environ['EMERGENT_LLM_KEY']
+# Optional: absent means the null storage/AI providers are selected.
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ---------- Object storage ----------
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+# Backed by providers/storage.py. These wrappers keep the original names so
+# call sites read the same, but they are now `async` -- the previous versions
+# used the blocking `requests` library from inside async handlers, so every
+# upload and download stalled the whole event loop for the duration of the
+# round trip.
 APP_NAME = "haulcheck"
-storage_key = None
-MIME_TYPES = {
-    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif",
-    "webp": "image/webp", "pdf": "application/pdf", "heic": "image/heic",
-}
+MIME_TYPES = providers_storage.MIME_TYPES
 
 
-def init_storage():
-    global storage_key
-    if storage_key:
-        return storage_key
-    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
-    resp.raise_for_status()
-    storage_key = resp.json()["storage_key"]
-    return storage_key
+async def init_storage():
+    """Verify the storage backend is reachable. Called at startup."""
+    return await providers_storage.get_provider().healthy()
 
 
-def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    resp = requests.put(f"{STORAGE_URL}/objects/{path}",
-                        headers={"X-Storage-Key": key, "Content-Type": content_type}, data=data, timeout=120)
-    resp.raise_for_status()
-    return resp.json()
+async def put_object(path: str, data: bytes, content_type: str) -> dict:
+    return await providers_storage.get_provider().put(path, data, content_type)
 
 
-def get_object(path: str):
-    key = init_storage()
-    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+async def get_object(path: str):
+    return await providers_storage.get_provider().get(path)
 
 
 app = FastAPI()
@@ -959,18 +949,15 @@ async def create_alert(org_id, type_, severity, title, message, vehicle_reg="", 
             owner = await db.users.find_one(
                 {"user_id": org.get("owner_user_id")}, {"_id": 0, "email": 1})
             if owner and owner.get("email"):
-                import resend
-                resend.api_key = os.environ['RESEND_API_KEY']
                 sev = severity.replace("_", " ").title()
                 html = (f"<h2 style='font-family:Arial'>⚠️ {sev} defect reported</h2>"
                         f"<p style='font-family:Arial;font-size:15px'><b>{title}</b></p>"
                         f"<p style='font-family:Arial;color:#475569'>{message}</p>"
                         f"<p style='font-family:Arial;color:#64748b'>Vehicle: {vehicle_reg or '—'}{(' · Driver: ' + driver_name) if driver_name else ''}</p>"
                         f"<p style='font-family:Arial;font-size:12px;color:#94a3b8'>Log in to HaulCheck to review and action this.</p>")
-                await asyncio.to_thread(resend.Emails.send, {
-                    "from": os.environ['SENDER_EMAIL'], "to": [owner["email"]],
-                    "subject": f"HaulCheck: {sev} defect — {vehicle_reg or 'vehicle'}", "html": html,
-                })
+                await providers_email.get_provider().send(
+                    [owner["email"]],
+                    f"HaulCheck: {sev} defect — {vehicle_reg or 'vehicle'}", html)
         except Exception as e:
             logging.error(f"Alert email failed: {e}")
     return alert
@@ -1225,13 +1212,10 @@ async def create_invitation(data: InviteInput, user: User = Depends(get_current_
     email_sent = False
     email_error = ""
     try:
-        import resend
-        resend.api_key = os.environ['RESEND_API_KEY']
-        await asyncio.to_thread(resend.Emails.send, {
-            "from": os.environ['SENDER_EMAIL'], "to": [email],
-            "subject": f"{user.name} invited you to HaulCheck", "html": html,
-        })
-        email_sent = True
+        result = await providers_email.get_provider().send(
+            [email], f"{user.name} invited you to HaulCheck", html)
+        email_sent = result.sent
+        email_error = result.error
     except Exception as e:
         email_error = str(e)
         logging.error(f"Invite email failed: {e}")
@@ -1542,12 +1526,8 @@ async def forgot_password(data: ForgotPasswordInput):
             "</td></tr></table></div>"
         )
         try:
-            import resend
-            resend.api_key = os.environ['RESEND_API_KEY']
-            await asyncio.to_thread(resend.Emails.send, {
-                "from": os.environ['SENDER_EMAIL'], "to": [email],
-                "subject": "Reset your HaulCheck password", "html": html,
-            })
+            await providers_email.get_provider().send(
+                [email], "Reset your HaulCheck password", html)
         except Exception as e:
             logging.error(f"Password reset email failed: {e}")
     return {"ok": True}
@@ -1606,12 +1586,8 @@ async def _send_verification_email(user_id: str, email: str, name: str, base_url
         "</td></tr></table></div>"
     )
     try:
-        import resend
-        resend.api_key = os.environ['RESEND_API_KEY']
-        await asyncio.to_thread(resend.Emails.send, {
-            "from": os.environ['SENDER_EMAIL'], "to": [email],
-            "subject": "Confirm your HaulCheck email", "html": html,
-        })
+        await providers_email.get_provider().send(
+            [email], "Confirm your HaulCheck email", html)
     except Exception as e:
         logging.error(f"Verification email failed: {e}")
 
@@ -1770,7 +1746,7 @@ async def upload_file(file: UploadFile = File(...), user: User = Depends(get_cur
         raise HTTPException(status_code=413, detail="File too large (max 15MB)")
     content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
     try:
-        result = put_object(path, data, content_type)
+        result = await put_object(path, data, content_type)
     except Exception as e:
         logging.error(f"Upload failed: {e}")
         raise HTTPException(status_code=502, detail="Upload failed")
@@ -1808,7 +1784,7 @@ async def download_file(file_id: str, request: Request):
     rec = await db.files.find_one({"id": file_id, **tenant_filter(user), "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
-    data, ct = get_object(rec["storage_path"])
+    data, ct = await get_object(rec["storage_path"])
     return Response(content=data, media_type=rec.get("content_type") or ct,
                     headers={"Content-Disposition": f'inline; filename="{rec.get("original_filename", file_id)}"'})
 
@@ -2070,7 +2046,7 @@ async def driver_upload(file: UploadFile = File(...), driver: dict = Depends(get
         raise HTTPException(status_code=413, detail="File too large (max 15MB)")
     content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
     try:
-        result = put_object(path, data, content_type)
+        result = await put_object(path, data, content_type)
     except Exception as e:
         logging.error(f"Driver upload failed: {e}")
         raise HTTPException(status_code=502, detail="Upload failed")
@@ -2124,7 +2100,7 @@ async def driver_tacho_analyse(payload: dict, driver: dict = Depends(get_current
     rec = await db.files.find_one({"id": file_id, "org_id": driver["org_id"], "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
-    fdata, ct = get_object(rec["storage_path"])
+    fdata, ct = await get_object(rec["storage_path"])
     ct = rec.get("content_type") or ct
     ext = (rec.get("original_filename") or "").rsplit(".", 1)[-1].lower()
     # get_current_driver resolves region from the driver's organisation.
@@ -2162,7 +2138,7 @@ async def driver_download_file(file_id: str, request: Request):
     rec = await db.files.find_one({"id": file_id, "org_id": driver["org_id"], "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
-    fdata, ct = get_object(rec["storage_path"])
+    fdata, ct = await get_object(rec["storage_path"])
     return Response(content=fdata, media_type=rec.get("content_type") or ct,
                     headers={"Content-Disposition": f'inline; filename="{rec.get("original_filename", file_id)}"'})
 
@@ -2431,7 +2407,7 @@ async def _render_letter_attachment(user: User, data: LetterGenerateInput) -> At
     fname = f"{data.template.replace(' ', '_')}_{(data.recipient_name or 'letter').replace(' ', '_')}.pdf"
     path = f"{APP_NAME}/uploads/{user.user_id}/{file_id}.pdf"
     try:
-        result = await asyncio.to_thread(put_object, path, pdf_bytes, "application/pdf")
+        result = await put_object(path, pdf_bytes, "application/pdf")
     except Exception as e:
         logging.error(f"Letter upload failed: {e}")
         raise HTTPException(status_code=502, detail="Upload failed")
@@ -2931,7 +2907,7 @@ async def ai_import_insurance(files: List[UploadFile] = File(...), user: User = 
         content_type = file.content_type or MIME_TYPES.get(ext, "application/octet-stream")
         path = f"{APP_NAME}/uploads/{user.user_id}/{file_id}.{ext}"
         try:
-            result = put_object(path, data, content_type)
+            result = await put_object(path, data, content_type)
         except Exception as e:
             logging.error(f"AI import upload failed: {e}")
             continue
@@ -3008,7 +2984,7 @@ async def reclassify_insurance(user: User = Depends(get_current_user)):
             frec = await db.files.find_one({"id": atts[0]["file_id"], **tenant_filter(user), "is_deleted": False}, {"_id": 0})
             if frec:
                 try:
-                    content, ctype = await asyncio.to_thread(get_object, frec["storage_path"])
+                    content, ctype = await get_object(frec["storage_path"])
                     ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else "pdf"
                     extracted = await ai_extract_insurance(content, frec.get("content_type") or ctype, ext)
                     if extracted:
@@ -3145,7 +3121,7 @@ async def parse_tacho(payload: TachoParseInput, user: User = Depends(get_current
     rec = await db.files.find_one({"id": payload.file_id, **tenant_filter(user), "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
-    data, ct = get_object(rec["storage_path"])
+    data, ct = await get_object(rec["storage_path"])
     ct = rec.get("content_type") or ct
     ext = (rec.get("original_filename") or "").rsplit(".", 1)[-1].lower()
     ai_types = (ct or "").startswith("image/") or (ct or "").startswith("text/") or ct == "application/pdf"
@@ -3214,7 +3190,7 @@ async def analyse_tacho(payload: TachoAnalyseInput, user: User = Depends(get_cur
     rec = await db.files.find_one({"id": payload.file_id, **tenant_filter(user), "is_deleted": False}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
-    data, ct = get_object(rec["storage_path"])
+    data, ct = await get_object(rec["storage_path"])
     ct = rec.get("content_type") or ct
     ext = (rec.get("original_filename") or "").rsplit(".", 1)[-1].lower()
     result = await run_tacho_analysis(data, ct, ext, user.region, payload.driver_name) or {}
@@ -4242,7 +4218,10 @@ async def dashboard(user: User = Depends(get_current_user)):
     score, band = _score_and_band(stats["counts"], gaps)
     stats["risk_score"] = score
     stats["risk_band"] = band
-    stats["registered_users"] = await db.users.count_documents({})
+    # A platform-wide user count used to be returned here, which exposed a
+    # business metric of ours to every customer -- a competitor with an account
+    # could watch the platform grow. It now lives in the admin console, where
+    # it belongs.
     today = datetime.now(timezone.utc).date().isoformat()
     # One score per organisation per day. The filter must NOT include user_id:
     # the compliance score describes the fleet, not the person looking at it, so
@@ -4515,11 +4494,8 @@ async def _deliver_reminder(org_id: str, to_emails: list, alerts: list, weekly: 
         subject = f"HaulCheck weekly summary — {len(alerts)} item(s) need attention" if alerts else "HaulCheck weekly summary — all clear"
     else:
         subject = f"HaulCheck reminder — {len(alerts)} compliance item(s) need attention" if alerts else "HaulCheck compliance reminder — all clear"
-    import resend
-    resend.api_key = os.environ['RESEND_API_KEY']
-    params = {"from": os.environ['SENDER_EMAIL'], "to": to_emails, "subject": subject, "html": html}
-    result = await asyncio.to_thread(resend.Emails.send, params)
-    return result.get("id") if isinstance(result, dict) else getattr(result, "id", None)
+    result = await providers_email.get_provider().send(to_emails, subject, html)
+    return result.message_id
 
 
 def _alert_key(a: dict) -> str:
@@ -4672,7 +4648,7 @@ async def _get_logo_bytes(org_id: str, operator: dict):
     if not frec:
         return None
     try:
-        data, _ = await asyncio.to_thread(get_object, frec["storage_path"])
+        data, _ = await get_object(frec["storage_path"])
         return data
     except Exception as e:
         logging.error(f"Logo fetch failed: {e}")
@@ -4690,7 +4666,7 @@ async def _collect_files(org_id: str, file_ids: list):
         if not frec:
             continue
         try:
-            data, ct = await asyncio.to_thread(get_object, frec["storage_path"])
+            data, ct = await get_object(frec["storage_path"])
             files.append((data, frec.get("content_type") or ct, frec.get("original_filename") or fid))
         except Exception as e:
             logging.error(f"Export file fetch {fid} failed: {e}")
@@ -4765,17 +4741,16 @@ async def email_account_pack(data: EmailPackInput, user: User = Depends(get_curr
         "</td></tr></table></div>"
     )
     try:
-        import resend
-        resend.api_key = os.environ['RESEND_API_KEY']
-        params = {
-            "from": os.environ['SENDER_EMAIL'], "to": data.to,
-            "subject": f"{company} — Compliance Audit Pack ({authority})",
-            "html": html,
-            "attachments": [{"filename": fname, "content": list(pdf)}],
-        }
-        result = await asyncio.to_thread(resend.Emails.send, params)
-        eid = result.get("id") if isinstance(result, dict) else getattr(result, "id", None)
-        return {"ok": True, "email_id": eid, "filename": fname}
+        result = await providers_email.get_provider().send(
+            data.to, f"{company} — Compliance Audit Pack ({authority})", html,
+            attachments=[providers_email.Attachment(
+                filename=fname, content=pdf, content_type="application/pdf")])
+        if not result.sent:
+            raise HTTPException(status_code=502,
+                                detail=f"Failed to send email: {result.error}")
+        return {"ok": True, "email_id": result.message_id, "filename": fname}
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Audit pack email failed: {e}")
         raise HTTPException(status_code=502, detail="Could not send email")
@@ -4922,11 +4897,17 @@ async def startup_event():
         logger.info("Auth rate-limit and audit indexes ready")
     except Exception as e:
         logger.error(f"Auth index setup failed: {e}")
+    # Report which backend each external service resolved to. Previously a
+    # missing key produced only an opaque "Storage init failed" line; naming the
+    # provider makes a misconfigured environment obvious at a glance.
     try:
-        init_storage()
-        logger.info("Object storage initialized")
+        healthy = await init_storage()
+        logger.info(f"Storage provider: {providers_storage.get_provider().name} "
+                    f"({'reachable' if healthy else 'UNAVAILABLE - uploads will fail'})")
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
+    logger.info(f"AI provider: {providers_ai.get_provider().name}")
+    logger.info(f"Email provider: {providers_email.get_provider().name}")
     try:
         scheduler.add_job(run_daily_reminders, "cron", hour=7, minute=0, id="daily_reminders", replace_existing=True)
         scheduler.add_job(run_weekly_reminders, "cron", day_of_week="mon", hour=7, minute=0, id="weekly_reminders", replace_existing=True)

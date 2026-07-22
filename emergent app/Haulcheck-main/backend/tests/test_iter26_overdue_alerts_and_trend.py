@@ -114,9 +114,18 @@ class TestComplianceHistory:
         assert "risk_band" in data
         assert isinstance(data["risk_score"], int)
         assert data["risk_band"] in ("Low Risk", "Moderate Risk", "High Risk")
-        assert "registered_users" in data
-        assert isinstance(data["registered_users"], int)
-        assert data["registered_users"] >= 1
+
+    def test_dashboard_does_not_leak_platform_wide_counts(self, client):
+        """The tenant dashboard must expose nothing about other customers.
+
+        It used to return `registered_users`, a count of every account on the
+        platform -- our business metric, visible to any customer including a
+        competitor. It now lives in the platform admin console. This assertion
+        is inverted from the original on purpose.
+        """
+        data = client.get(f"{BASE_URL}/api/dashboard").json()
+        assert "registered_users" not in data, \
+            "the dashboard is leaking a platform-wide user count to tenants"
 
     def test_history_returns_snapshot(self, client):
         # Trigger snapshot via dashboard

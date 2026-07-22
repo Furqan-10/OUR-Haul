@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import { downloadPdf } from "@/lib/download";
 import { RegionToggle } from "@/components/RegionToggle";
-import { Truck, Users, FolderCheck, FileWarning, AlertTriangle, Sparkles, ShieldCheck, ClipboardCheck, FileDown, Layers, UsersRound } from "lucide-react";
+import { Truck, Users, FolderCheck, FileWarning, AlertTriangle, Sparkles, ShieldCheck, ClipboardCheck, FileDown, Layers } from "lucide-react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { AuditReportDialog } from "@/components/AuditReportDialog";
 import { DefectAlerts } from "@/components/DefectAlerts";
@@ -90,7 +90,7 @@ export default function Dashboard() {
   };
 
   if (!data) return <div className="text-slate-400">Loading dashboard…</div>;
-  const { counts, alerts, risk_score, risk_band, registered_users } = data;
+  const { counts, alerts, risk_score, risk_band } = data;
   const circumference = 2 * Math.PI * 52;
   const offset = circumference - (risk_score / 100) * circumference;
 
@@ -127,16 +127,10 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div data-testid="registered-users-counter" className="flex items-center justify-between gap-4 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-md px-6 py-4 mb-6 animate-in-up">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl bg-white/10 flex items-center justify-center"><UsersRound size={22} /></div>
-          <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-400 font-semibold">Registered Users</p>
-            <p className="text-sm text-slate-300">People using HaulCheck</p>
-          </div>
-        </div>
-        <span data-testid="registered-users-value" className="font-heading text-4xl font-black tabular-nums">{registered_users ?? 0}</span>
-      </div>
+      {/* A "Registered Users" banner stood here, showing a platform-wide account
+          count to every customer. That is our business metric, not theirs, and a
+          competitor with an account could watch it grow. It now lives in the
+          platform admin console. */}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
         {/* Risk score */}
