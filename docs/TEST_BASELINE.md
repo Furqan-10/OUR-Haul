@@ -25,7 +25,7 @@ external service or a test that drifted from a deliberate product change.
 Reproduce with:
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 .venv/Scripts/python -m pytest -n 0
 ```
 

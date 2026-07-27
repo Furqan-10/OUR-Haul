@@ -93,18 +93,16 @@ This puts it in the user's home folder under `haulcheck`:
 
 ```powershell
 cd ~
-git clone https://github.com/shahmir2004/haulcheck.git
+git clone https://github.com/Furqan-10/OUR-Haul.git
 ```
 
-> **A browser window will pop up asking you to sign in to GitHub.** The code is in
-> a **private** repository, so sign in with **your own developer GitHub account**
-> (the one that owns the repo). This happens once; Git remembers it afterwards.
+> If a browser window pops up asking you to sign in to GitHub, sign in with the
+> developer GitHub account. This happens once; Git remembers it afterwards.
 
-When it finishes, move into the app folder. The app lives two levels down inside
-the project:
+When it finishes, move into the app folder:
 
 ```powershell
-cd ~\haulcheck\"emergent app"\Haulcheck-main
+cd ~\OUR-Haul
 ```
 
 You are now in the folder that contains `backend`, `frontend` and
@@ -179,7 +177,7 @@ Everything is installed. Now start the two parts. The database is already runnin
 in the background as a service, so there is nothing to start for it.
 
 **Easiest way — the launcher:** in File Explorer, open
-`…\haulcheck\emergent app\Haulcheck-main`, and **double-click
+`…\haulcheck\.`, and **double-click
 `start-haulcheck.bat`**. Two black windows open (the API and the web app), and
 after a few seconds your browser opens the app automatically.
 

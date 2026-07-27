@@ -10,19 +10,19 @@ Generated on the Emergent platform (`fastapi_react_mongo_shadcn` base image). Th
 
 ## Repository layout
 
-The actual application lives **two levels down** from this file:
+The application sits at the repository root:
 
 ```
-emergent app/Haulcheck-main/
 ├── backend/    FastAPI + MongoDB (Python)
 ├── frontend/   React 19 (CRA + CRACO)
+├── docs/                  DEVELOPMENT, SECURITY, SCALABILITY, TEST_BASELINE
 ├── memory/PRD.md          product/iteration history (read for feature context)
 ├── design_guidelines.json design system source of truth
 ├── test_result.md         agent testing protocol + state (preserve the header block)
 └── test_reports/          per-iteration pytest JSON output
 ```
 
-Run all commands from `backend/` or `frontend/` inside `emergent app/Haulcheck-main/`, not from this root.
+Run all commands from `backend/` or `frontend/`, not from the repository root.
 
 ## Commands
 

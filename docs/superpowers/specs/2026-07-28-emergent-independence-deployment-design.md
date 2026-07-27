@@ -32,7 +32,7 @@ hosting, not features.
 - Turning AI features on. They ship disabled (`AI_PROVIDER=null`) and every call
   site already has a try/except and a fallback. Enabling them later is one
   environment variable plus a key.
-- Restructuring the repository. `emergent app/Haulcheck-main/` stays; both Render
+- Restructuring the repository. `` stays; both Render
   and Vercel support a root-directory setting.
 - Custom domain setup as blocking work. The client will buy a domain later; the
   guide covers it as a clearly-marked follow-on section.
@@ -237,8 +237,8 @@ rather than an endless spinner or a raw error.
 |---|---|
 | `REACT_APP_BACKEND_URL` | Render URL, **no trailing `/api`** |
 
-Root directory on both platforms: `emergent app/Haulcheck-main/backend` and
-`emergent app/Haulcheck-main/frontend` respectively.
+Root directory on both platforms: `backend` and
+`frontend` respectively.
 
 ### Known constraint: Vercel preview deployments
 

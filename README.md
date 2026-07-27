@@ -85,14 +85,14 @@ wheels), Node 24, MongoDB 7. No Docker.
 # 1. MongoDB on 27017
 
 # 2. API -> http://localhost:8000
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 py -3.12 -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-local.txt
 cp .env.example .env          # then set a real JWT_SECRET
 .venv/Scripts/python -m uvicorn server:app --reload --port 8000
 
 # 3. Frontend -> http://localhost:3000
-cd "emergent app/Haulcheck-main/frontend"
+cd "frontend"
 yarn install && cp .env.example .env && yarn start
 ```
 
@@ -116,10 +116,9 @@ cannot reach it:
 
 ## Layout
 
-The application lives two levels down from the repository root.
+The application sits at the repository root.
 
 ```
-emergent app/Haulcheck-main/
 ├── backend/              FastAPI + MongoDB
 │   ├── server.py         most routes and models (being split in Phase 6)
 │   ├── tenancy.py        the only place an org filter is constructed

@@ -10,8 +10,8 @@
 
 ## Global Constraints
 
-- All work happens inside `emergent app/Haulcheck-main/`. The repository layout does **not** change.
-- Run backend commands from `emergent app/Haulcheck-main/backend/`, frontend commands from `emergent app/Haulcheck-main/frontend/`.
+- All work happens inside ``. The repository layout does **not** change.
+- Run backend commands from `backend/`, frontend commands from `frontend/`.
 - **Never modify `addopts` in `backend/pytest.ini`.** Run tests serially with `pytest -n 0` (NOT `-p no:xdist`, which errors).
 - **No `boto3`.** It is synchronous; calling it from an `async def` handler blocks the event loop. `backend/tests/test_provider_decoupling.py::test_no_vendor_sdk_imported_outside_the_provider_package` fails the build if it appears. All outbound HTTP uses `httpx.AsyncClient`.
 - **No `requests` in `backend/*.py` or `backend/providers/*.py`.** Same guard, same reason. It remains allowed in `backend/tests/`.
@@ -138,8 +138,8 @@ def test_no_third_party_host_in_the_frontend():
 def test_emergent_platform_files_are_gone():
     repo = BACKEND.parent.parent.parent
     leftovers = [str(p.relative_to(repo)) for p in
-                 (repo / "emergent app/Haulcheck-main/.emergent",
-                  repo / "emergent app/Haulcheck-main/.gitconfig") if p.exists()]
+                 (repo / ".emergent",
+                  repo / ".gitconfig") if p.exists()]
     assert not leftovers, (
         "Emergent platform files remain: " + ", ".join(leftovers) + "\n"
         ".gitconfig sets the commit author to github@emergent.sh; .emergent/ "
@@ -150,7 +150,7 @@ def test_emergent_platform_files_are_gone():
 - [ ] **Step 2: Run it and confirm both tests fail**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 pytest tests/test_no_third_party_frontend.py -n 0 -v
 ```
 
@@ -234,7 +234,7 @@ In `frontend/craco.config.js`, delete lines 131-145 — the whole `if (isDevServ
 - [ ] **Step 7: Delete the platform files**
 
 ```bash
-cd "emergent app/Haulcheck-main"
+cd "."
 git rm -r --cached .emergent
 rm -rf .emergent
 git rm --cached .gitconfig
@@ -244,7 +244,7 @@ rm -f .gitconfig
 - [ ] **Step 8: Run the guard and confirm both tests pass**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 pytest tests/test_no_third_party_frontend.py -n 0 -v
 ```
 
@@ -253,7 +253,7 @@ Expected: 2 passed.
 - [ ] **Step 9: Confirm the frontend still builds without the removed package**
 
 ```bash
-cd "emergent app/Haulcheck-main/frontend"
+cd "frontend"
 yarn install
 yarn build
 ```
@@ -434,7 +434,7 @@ botocore==1.34.162
 Install it:
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 pip install botocore==1.34.162
 ```
 
@@ -1074,14 +1074,14 @@ botocore==1.34.162
 - [ ] **Step 5: Delete the superseded manifest**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 git rm requirements-local.txt
 ```
 
 - [ ] **Step 6: Verify nothing imports a removed package**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 grep -rnE "^\s*(import|from)\s+(pandas|boto3|litellm|openai|tiktoken|tokenizers|huggingface_hub|google\.|googleapiclient|stripe|numpy)\b" \
   --include=*.py . | grep -v "/tests/"
 ```
@@ -1091,7 +1091,7 @@ Expected: **no output**. Any hit must be resolved before continuing — either t
 - [ ] **Step 7: Verify a clean install works**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 python -m venv /tmp/hc-verify
 /tmp/hc-verify/bin/pip install -r requirements.txt
 /tmp/hc-verify/bin/python -c "import server" 2>&1 | tail -5
@@ -1454,7 +1454,7 @@ requirements-dev.txt
 - [ ] **Step 3: Build and run the image locally**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 docker build -t haulcheck-api .
 docker run --rm -p 8000:8000 \
   -e MONGO_URL="mongodb://host.docker.internal:27017" \
@@ -1490,7 +1490,7 @@ services:
     runtime: docker
     plan: free
     region: frankfurt
-    rootDir: "emergent app/Haulcheck-main/backend"
+    rootDir: "backend"
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
@@ -1601,7 +1601,7 @@ TRUST_PROXY_HEADERS=
 - [ ] **Step 8: Verify the frontend builds with the production variable**
 
 ```bash
-cd "emergent app/Haulcheck-main/frontend"
+cd "frontend"
 REACT_APP_BACKEND_URL=https://haulcheck-api.onrender.com yarn build
 grep -rl "haulcheck-api.onrender.com" build/static/js/ | head -1
 ```
@@ -1644,7 +1644,7 @@ The app ships with `AI_PROVIDER=null`. `NullAI.chat()` raises `AIUnavailable`, a
 - [ ] **Step 1: Locate every AI call site on both sides**
 
 ```bash
-cd "emergent app/Haulcheck-main"
+cd "."
 grep -rn "providers_ai\|get_provider()\.chat\|AIUnavailable" backend/server.py
 grep -rn "/ai/\|ai_summary\|ai-summary" frontend/src --include=*.js
 ```
@@ -1702,7 +1702,7 @@ Repeat Step 3. All five must now show a message and no stuck spinner.
 - [ ] **Step 6: Confirm the null-provider tests still pass**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 pytest tests/test_provider_decoupling.py -n 0 -v
 ```
 
@@ -1744,14 +1744,14 @@ Do not write this from the plan — write it from having done it. Work through i
 2. **Cloudflare R2** — bucket `haulcheck`, jurisdiction EU. An API token scoped to *Object Read & Write* on that bucket only. Record the Account ID, Access Key ID, Secret. The endpoint is `https://<account-id>.r2.cloudflarestorage.com`.
 3. **Resend** — API key, and a verified sender. Note that without a verified domain, sending is restricted to your own address.
 4. **Render** — new Blueprint from the repo, which picks up `render.yaml`. Fill in every `sync: false` variable. Leave `CORS_ORIGINS` until step 6.
-5. **Vercel** — new project, Root Directory `emergent app/Haulcheck-main/frontend`, `REACT_APP_BACKEND_URL` set to the Render URL with **no** trailing `/api`.
+5. **Vercel** — new project, Root Directory `frontend`, `REACT_APP_BACKEND_URL` set to the Render URL with **no** trailing `/api`.
 6. **Connect them** — set `CORS_ORIGINS` on Render to the exact Vercel production origin, then redeploy. The backend refuses to start when `ENVIRONMENT=production` and this is unset or `*`.
 7. **cron-job.org** — daily 07:00 UTC, `POST https://<render-url>/api/tasks/run-reminders`, header `Authorization: Bearer <CRON_SECRET>` (copy the generated value from Render's environment tab).
 
 - [ ] **Step 2: Run the live storage tests against the real bucket**
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 export S3_BUCKET=haulcheck
 export S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 export S3_ACCESS_KEY=... S3_SECRET_KEY=... S3_REGION=auto STORAGE_PROVIDER=s3

@@ -41,7 +41,7 @@ or the distribution package) and skip to step 2.
 ### 2. Backend
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 py -3.12 -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-local.txt   # Scripts -> bin on macOS/Linux
 cp .env.example .env
@@ -62,7 +62,7 @@ app and the tests. Keep both in sync when adding a genuine runtime dependency.
 ### 3. Frontend
 
 ```bash
-cd "emergent app/Haulcheck-main/frontend"
+cd "frontend"
 corepack enable && corepack prepare yarn@1.22.22 --activate
 yarn install
 cp .env.example .env
@@ -78,11 +78,11 @@ Three processes, three terminals. From the repository root:
   --dbpath .data/mongo --port 27017 --bind_ip 127.0.0.1
 
 # 2. API  ->  http://localhost:8000
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 .venv/Scripts/python -m uvicorn server:app --reload --port 8000
 
 # 3. Frontend  ->  http://localhost:3000
-cd "emergent app/Haulcheck-main/frontend"
+cd "frontend"
 yarn start
 ```
 
@@ -116,7 +116,7 @@ drive a live backend over HTTP. MongoDB *and* the API must already be running.
 > that overwrites the header (see `backend/security.py`).
 
 ```bash
-cd "emergent app/Haulcheck-main/backend"
+cd "backend"
 .venv/Scripts/python -m pytest -n 0                        # serial (deterministic)
 .venv/Scripts/python -m pytest                             # parallel, uses pytest.ini
 .venv/Scripts/python -m pytest tests/backend_test.py::TestAuth -n 0   # one class
