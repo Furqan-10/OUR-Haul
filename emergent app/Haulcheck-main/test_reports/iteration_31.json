@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 31 — full E2E testing of the four iter31 features (Licence-check history log, Vehicle History Pack, Records Retention indicator, Test History summary strip). Backend pytest /app/backend/tests/test_iter31_features.py: 10/10 PASSED. Frontend UI smoke via Playwright against the deployed preview URL: all four flows work as specified. Note: the sidebar labels the section 'Fleet' but the actual route is /vehicles — /fleet is not a real route (App.js has no such Route; wildcard redirects to /dashboard). Feature-level results below.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar / routing", "issues": ["Sidebar item labelled 'Fleet' navigates to /vehicles. The problem statement / task brief refers to '/fleet' — there is no /fleet route registered in App.js, wildcard redirects to /dashboard. If external links or docs reference /fleet, add a <Navigate to='/vehicles'/> redirect for /fleet."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter31_features.py",
+    "/app/test_reports/pytest/pytest_iter31.xml"
+  ],
+  "action_items": [
+    "(Optional) Add App.js route: <Route path='/fleet' element={<Navigate to='/vehicles' replace/>}/> so external references to /fleet don't bounce to /dashboard.",
+    "(Optional) Vehicles.js line 132 vehicle-history-button has no accessible aria-label — screen-readers only get the title attr. Consider adding aria-label='Vehicle history pack'."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /api/licence-checks correctly syncs the driver headline fields (licence_check_date/licence_check_code/penalty_points/licence_check_due) — verified by pytest and UI.",
+    "server.py GET /api/reports/vehicle/{reg}: _norm_reg strips spaces & lowercases so 'ab12cde' matches stored 'AB12 CDE'. Unknown reg returns 404. format=json response contains 'title' starting 'Vehicle History Pack — <reg>' with >=5 sections; PDF (both include_files true/false) returns %PDF header. All good.",
+    "server.py GET /api/records-retention returns 4 categories with fields {label, retention_months, total, eligible, approaching, items} plus top-level totals — matches spec.",
+    "Frontend Vehicles.js: TabsTrigger value='history' uses data-testid='tab-test-history' (not 'tab-history'); matches test-history summary spec.",
+    "Frontend Drivers.js licence-check dialog: lc-date/lc-due/lc-code/lc-points/lc-result/lc-notes/save-licence-check-button/lc-history-item/lc-delete testids all wired; create+delete round-trip works and history refreshes without reload."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter31_features.py (new — 10 pytest cases)"
+  ],
+  "success_rate": {"backend": "100% (10/10 pytest)", "frontend": "100% (4/4 features verified)"},
+  "test_credentials": "Manager: manager@haulcheck.co.uk / Test1234! (pre-seeded)",
+  "seed_data_creation": "Pytest created one TEST_ prefixed licence-check on the first driver and deleted it as part of the test. UI test also created+deleted one licence-check entry. No lingering data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run: `cd /app/backend && python -m pytest tests/test_iter31_features.py -v -o addopts=''`. All 10 should pass. Frontend features live at /vehicles (not /fleet — that route doesn't exist, wildcard sends /fleet -> /dashboard). Retention card is on /dashboard below the Recall card. Licence-check log is on /drivers behind '+ Log check' link on each driver card. Vehicle history dropdown is on /vehicles Vehicles tab (row-level History icon). Test History summary strip is on /vehicles under the 'Test History' tab (data-testid='tab-test-history').",
+  "rca of the issue": "No bugs found in this iteration."
+}

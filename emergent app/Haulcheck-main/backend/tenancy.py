@@ -52,6 +52,13 @@ ORG_COLLECTIONS = (
     "holidays",
     "test_history",
     "files",
+    # Added with Emergent iterations 30-32. They arrived scoped by user_id,
+    # which is why they are listed here explicitly rather than discovered: the
+    # guard below fails the build for any collection server.py touches that is
+    # neither declared tenant data nor a known identity record.
+    "repairs",
+    "recalls",
+    "licence_checks",
 )
 
 # Organisation roles, least to most privileged.

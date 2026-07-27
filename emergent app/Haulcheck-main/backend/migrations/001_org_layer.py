@@ -21,6 +21,13 @@ Safety properties:
   leaks between tenants; leaving it unstamped makes it invisible instead, which
   is the safe failure.
 
+Re-run it whenever a collection is added to `tenancy.ORG_COLLECTIONS`. The loop
+reads that tuple rather than a fixed list, and only touches documents with no
+`org_id`, so a second run backfills the newly-declared collections and leaves
+everything already stamped alone. That is how `repairs`, `recalls` and
+`licence_checks` were brought in when Emergent iterations 30-32 merged: they
+arrived scoped by `user_id`, which is the shape this migration already handles.
+
 Usage (from backend/, with the venv active):
 
     python migrations/001_org_layer.py --dry-run

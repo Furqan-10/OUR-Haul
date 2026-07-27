@@ -37,6 +37,25 @@ QUERY = re.compile(
     r"\s*\(\s*(?P<args>.{0,240}?)\)",
     re.DOTALL,
 )
+_OPS = (r"find_one|find|update_one|update_many|delete_one|delete_many"
+        r"|count_documents|distinct|aggregate")
+
+# `db[<expr>].<operation>(` -- the collection chosen at runtime, as the records
+# retention and report-builder endpoints do when they loop over a table of
+# collection names.
+#
+# This exists because the pattern above cannot see these at all: it requires a
+# literal attribute name. Two real cross-tenant reads reached the merge through
+# exactly that blind spot, in `records_retention`, and the guard reported the
+# file clean. The collection is not knowable statically, so there is nothing to
+# check against ORG_COLLECTIONS -- any user_id filter reached this way is
+# treated as a violation and must use tenant_filter().
+DYNAMIC_QUERY = re.compile(
+    r"db\[(?P<expr>[^\]\n]{0,60})\]\s*\.\s*"
+    r"(?P<op>" + _OPS + r")"
+    r"\s*\(\s*(?P<args>.{0,240}?)\)",
+    re.DOTALL,
+)
 USER_ID_FILTER = re.compile(r"[\"']user_id[\"']\s*:")
 # Must match org_id used as a *filter key*. Matching the bare substring would
 # wave through `{"user_id": org_id}` -- the right value under the wrong key,
@@ -132,6 +151,36 @@ def test_no_raw_user_id_filters_on_tenant_collections():
             "Use tenancy.tenant_filter(user) instead:\n"
             '    db.vehicles.find(tenant_filter(user))\n'
             '    db.alerts.find(tenant_filter(user, read=False))\n\n'
+            + "\n".join(violations),
+        )
+
+
+def _dynamic_violations() -> list[str]:
+    source = SERVER.read_text(encoding="utf-8")
+    found = []
+    for match in DYNAMIC_QUERY.finditer(source):
+        args = match.group("args")
+        if not USER_ID_FILTER.search(args) or ORG_ID_KEY.search(args):
+            continue
+        if _is_exempt(source, match.start()):
+            continue
+        line = _line_of(source, match.start())
+        snippet = " ".join(match.group(0).split())[:110]
+        found.append(f"  server.py:{line}  db[{match.group('expr').strip()}]"
+                     f".{match.group('op')}(...)\n      {snippet}")
+    return found
+
+
+def test_no_raw_user_id_filters_through_dynamic_collection_access():
+    violations = _dynamic_violations()
+    if violations:
+        pytest.fail(
+            "Collections selected at runtime must still be scoped by org_id.\n\n"
+            "db[name] hides the collection from the literal-attribute check above,\n"
+            "so these queries look clean while reading one person's rows instead of\n"
+            "the organisation's -- or, with the clause dropped, every customer's.\n\n"
+            "Use tenancy.tenant_filter(user):\n"
+            '    db[coll].find(tenant_filter(user))\n\n'
             + "\n".join(violations),
         )
 

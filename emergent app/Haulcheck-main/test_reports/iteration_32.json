@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 32 — E2E test of (1) BUG FIX: VOR vehicles excluded from compliance score, (2) FEATURE: Sold/Disposed vehicles (endpoint, badge, exclusion), (3) FEATURE: 18-month Records Retention 'Off-road / sold vehicles' category, (4) FEATURE: Trailer Sold checkbox/badge, and (5) REGRESSION: PDF escaping (& < >) + licence-check headline recompute. Backend pytest tests/test_iter32_vor_sold.py = 7 passed, 1 skipped (viewer-guard: no self role change endpoint, but earlier iterations verified this). Frontend Playwright E2E on the deployed preview URL confirms: sold-button opens dialog with sold-date/sold-notes/save-sold-button, saving shows sold-badge and swaps VOR/Sold action buttons for restore-sold-button, dashboard Records Retention shows the 'Off-road / sold vehicles' category (5 categories total), Trailers tab Add form reveals trl-sold-date/trl-sold-notes when trl-sold is checked, and VOR button flow still works showing vor-badge + clear-vor-button.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter32_vor_sold.py",
+    "/app/test_reports/pytest/pytest_iter32.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py gather_stats (~line 3995, 4029, 4044, 4204) correctly skips vehicles/trailers where sold=True OR vor=True; vor_regs set unions sold regs so PMI/wheel loops skip them.",
+    "server.py POST /api/vehicles/{vid}/sold clears any prior VOR calendar events (delete_many ref in [vor:{vid}, sold:{vid}]) and stores sold_date+sold_notes with a keep_until = sold_date + 18 months. Reverse endpoint /sold/clear also removes the calendar event.",
+    "server.py records_retention (~line 2488-2518) 'Off-road / sold vehicles' category retention_months=18; items derive base date from sold_date (or vor_off_date) then compute eligibility.",
+    "Frontend Vehicles.js: sold-button and vor-button are correctly hidden when the row is sold (line 146-148 uses ternary v.sold ? restore-sold-button : (v.vor ? clear-vor-button : [vor-button, sold-button])). Verified in the UI: only 1 vor-button remaining after marking one of two vehicles sold.",
+    "Frontend Trailers.js trl-sold checkbox correctly reveals trl-sold-date + trl-sold-notes when checked; trailer-sold-badge exists on sold trailer rows."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter32_vor_sold.py (new — 8 pytest cases, 7 pass, 1 skip for viewer guard which needs no self role change endpoint)"
+  ],
+  "success_rate": {"backend": "100% (7/7 executed; 1 skipped for lack of self role-change endpoint, viewer 403 was covered in iteration 30)", "frontend": "100% (all iter32 UI flows verified: sold, VOR, retention, trailer-sold)"},
+  "test_credentials": "Manager: manager@haulcheck.co.uk / Test1234! (used isolated new accounts per test run to keep score deltas clean).",
+  "seed_data_creation": "Each test run creates a fresh registered manager account and TS/CD-prefixed test vehicles + one TEST_ licence-check that is deleted at end. No lingering pollution to seed accounts.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run: `cd /app/backend && python -m pytest tests/test_iter32_vor_sold.py -v -o addopts=''`. Auth: /api/auth/register expects {email, password, name} and returns {token, user}. PMI endpoint is /api/pmi (not /pmi-schedules) with body {vehicle_reg, frequency_weeks, next_due}. Licence-check body uses `points` (not penalty_points). Dashboard alert objects use key `name` for the reg (not `registration`). Records-retention response has top-level `categories: [...]` with items {state: 'eligible' | 'within' etc, keep_until, ...}. All iter32 data-testids verified: sold-button, sold-date, sold-notes, save-sold-button, sold-badge, restore-sold-button, trl-sold, trl-sold-date, trl-sold-notes, trailer-sold-badge, retention-category. Backend already contained necessary logic (sold + vor exclusion) — no code fixes required.",
+  "rca of the issue": "N/A — no bugs found. The VOR-excludes-compliance bug fix and all Sold-related features are working correctly end-to-end on both backend (verified via pytest deltas: expired count drops, PMI alert removed, risk_score maintained/improved) and frontend (badge + button swaps + dashboard retention card)."
+}

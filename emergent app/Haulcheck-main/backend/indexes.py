@@ -86,6 +86,15 @@ INDEX_SPEC: List[Tuple[str, list, dict]] = [
     ("weekly_walkarounds", [("org_id", _ASC), ("vehicle_reg", _ASC), ("week_start", _ASC)], {}),
     ("wheel_audits", [("org_id", _ASC), ("id", _ASC)], {}),
 
+    # ---- Repairs and recalls (iterations 30-32) ----
+    # The list endpoints sort by date descending, so the sort key is part of the
+    # index: without it Mongo reads the org's whole collection and sorts it in
+    # memory on every page load.
+    ("repairs", [("org_id", _ASC), ("repair_date", _DESC)], {}),
+    ("repairs", [("org_id", _ASC), ("id", _ASC)], {}),
+    ("recalls", [("org_id", _ASC), ("created_at", _DESC)], {}),
+    ("recalls", [("org_id", _ASC), ("id", _ASC)], {}),
+
     # ---- Tacho ----
     ("tacho", [("org_id", _ASC), ("next_due", _ASC)], {}),
     ("tacho", [("org_id", _ASC), ("id", _ASC)], {}),
@@ -104,6 +113,10 @@ INDEX_SPEC: List[Tuple[str, list, dict]] = [
     ("operator", [("org_id", _ASC)], {}),
     ("test_history", [("org_id", _ASC), ("id", _ASC)], {}),
     ("holidays", [("org_id", _ASC)], {}),
+    # Licence checks are read per driver to rebuild that driver's headline
+    # fields, and listed newest-first, so both accesses are served here.
+    ("licence_checks", [("org_id", _ASC), ("driver_id", _ASC), ("check_date", _DESC)], {}),
+    ("licence_checks", [("org_id", _ASC), ("id", _ASC)], {}),
 
     # ---- Dashboard, alerts, calendar ----
     # Partial index: the unread badge polls every 60s and only ever asks for

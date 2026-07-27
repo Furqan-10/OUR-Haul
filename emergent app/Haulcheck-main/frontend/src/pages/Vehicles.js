@@ -9,7 +9,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Plus, Truck, Trash2, Pencil, FileDown } from "lucide-react";
+import { Plus, Truck, Trash2, Pencil, FileDown, Ban, History, Tag, Undo2 } from "lucide-react";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { TrailersPanel } from "@/pages/Trailers";
 import { TestHistoryPanel } from "@/pages/TestHistory";
@@ -27,6 +28,10 @@ function VehiclesPanel() {
   const [form, setForm] = useState(empty);
   const [editId, setEditId] = useState(null);
   const [insurance, setInsurance] = useState([]);
+  const [vorFor, setVorFor] = useState(null);
+  const [vorForm, setVorForm] = useState({ reason: "", off_date: "", expected_return: "" });
+  const [soldFor, setSoldFor] = useState(null);
+  const [soldForm, setSoldForm] = useState({ sold_date: "", notes: "" });
 
   const load = async () => {
     const [v, i] = await Promise.all([api.get("/vehicles"), api.get("/insurance")]);
@@ -55,6 +60,38 @@ function VehiclesPanel() {
   };
 
   const remove = async (id) => { await api.delete(`/vehicles/${id}`); toast.success("Vehicle removed"); load(); };
+
+  const openVor = (v) => {
+    setVorForm({ reason: v.vor_reason || "", off_date: v.vor_off_date || new Date().toISOString().slice(0, 10), expected_return: v.vor_expected_return || "" });
+    setVorFor(v);
+  };
+  const saveVor = async () => {
+    try {
+      await api.post(`/vehicles/${vorFor.id}/vor`, vorForm);
+      toast.success("Vehicle marked VOR — added to calendar");
+      setVorFor(null); load();
+    } catch { toast.error("Could not mark VOR"); }
+  };
+  const clearVor = async (v) => {
+    try { await api.post(`/vehicles/${v.id}/vor/clear`); toast.success(`${v.registration} returned to service`); load(); }
+    catch { toast.error("Could not update"); }
+  };
+
+  const openSold = (v) => {
+    setSoldForm({ sold_date: v.sold_date || new Date().toISOString().slice(0, 10), notes: v.sold_notes || "" });
+    setSoldFor(v);
+  };
+  const saveSold = async () => {
+    try {
+      await api.post(`/vehicles/${soldFor.id}/sold`, soldForm);
+      toast.success("Vehicle marked sold — records retained for 18 months");
+      setSoldFor(null); load();
+    } catch { toast.error("Could not mark sold"); }
+  };
+  const clearSold = async (v) => {
+    try { await api.post(`/vehicles/${v.id}/sold/clear`); toast.success(`${v.registration} restored to active fleet`); load(); }
+    catch { toast.error("Could not update"); }
+  };
 
   return (
     <div>
@@ -97,7 +134,8 @@ function VehiclesPanel() {
                   <td className="px-5 py-3 font-bold text-slate-900">
                     <div className="flex items-center gap-2">
                       {v.registration}
-                      {v.vor && <span data-testid="vor-badge" className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700" title={v.vor_reason || "Vehicle off road"}>VOR</span>}
+                      {v.vor && !v.sold && <span data-testid="vor-badge" className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700" title={v.vor_reason || "Vehicle off road"}>VOR</span>}
+                      {v.sold && <span data-testid="sold-badge" className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title={v.sold_notes || `Sold / disposed${v.sold_date ? ` ${v.sold_date}` : ""}`}>SOLD</span>}
                     </div>
                   </td>
                   <td className="px-5 py-3 text-slate-600">{[v.make, v.model].filter(Boolean).join(" ") || "—"} <span className="text-slate-400">({v.type})</span></td>
@@ -105,6 +143,27 @@ function VehiclesPanel() {
                   <td className="px-5 py-3"><div className="flex flex-col gap-1 items-start"><StatusBadge status={v.service_status} /><span className="text-xs text-slate-400">{v.service_due || "—"}</span></div></td>
                   <td className="px-5 py-3"><div className="flex flex-col gap-1 items-start"><StatusBadge status={v.tax_status} /><span className="text-xs text-slate-400">{v.tax_due || "—"}</span></div></td>
                   <td className="px-5 py-3 text-right whitespace-nowrap">
+                    {v.sold
+                      ? <button data-testid="restore-sold-button" onClick={() => clearSold(v)} title="Restore to active fleet" className="text-amber-600 hover:text-emerald-600 p-1.5"><Undo2 size={16} /></button>
+                      : (v.vor
+                        ? <button data-testid="clear-vor-button" onClick={() => clearVor(v)} title="Return to service" className="text-red-500 hover:text-emerald-600 p-1.5"><Ban size={16} /></button>
+                        : <>
+                            <button data-testid="vor-button" onClick={() => openVor(v)} title="Mark off road (VOR)" className="text-slate-400 hover:text-red-600 p-1.5"><Ban size={16} /></button>
+                            <button data-testid="sold-button" onClick={() => openSold(v)} title="Mark as sold / disposed" className="text-slate-400 hover:text-amber-600 p-1.5"><Tag size={16} /></button>
+                          </>)}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button data-testid="vehicle-history-button" aria-label="Vehicle history pack" title="Vehicle history pack (PDF)" className="text-slate-400 hover:text-slate-900 p-1.5"><History size={16} /></button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem data-testid="vehicle-history-summary" onClick={() => downloadPdf(`/reports/vehicle/${encodeURIComponent(v.registration)}`, `vehicle-history-${(v.registration || "vehicle").replace(/ /g, "")}.pdf`)}>
+                          History pack (summary)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem data-testid="vehicle-history-files" onClick={() => downloadPdf(`/reports/vehicle/${encodeURIComponent(v.registration)}?include_files=true`, `vehicle-history-${(v.registration || "vehicle").replace(/ /g, "")}-pack.pdf`)}>
+                          History pack + evidence
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     <button data-testid="edit-vehicle-button" onClick={() => openEdit(v)} className="text-slate-400 hover:text-slate-900 p-1.5"><Pencil size={16} /></button>
                     <button data-testid="delete-vehicle-button" onClick={() => remove(v.id)} className="text-slate-400 hover:text-red-600 p-1.5"><Trash2 size={16} /></button>
                   </td>
@@ -152,6 +211,35 @@ function VehiclesPanel() {
             </div>
             <DialogFooter><Button data-testid="save-vehicle-button" type="submit" className="bg-black hover:bg-slate-800">{editId ? "Save Changes" : "Add Vehicle"}</Button></DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!vorFor} onOpenChange={(o) => !o && setVorFor(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle className="font-heading">Mark {vorFor?.registration} off road (VOR)</DialogTitle>
+            <DialogDescription>This flags the vehicle and adds off-road / expected-return events to your calendar.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Field label="Reason"><Input data-testid="vor-reason" value={vorForm.reason} onChange={(e) => setVorForm({ ...vorForm, reason: e.target.value })} placeholder="e.g. awaiting brake parts, accident damage" /></Field>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Off-road date"><Input data-testid="vor-off-date" type="date" value={vorForm.off_date} onChange={(e) => setVorForm({ ...vorForm, off_date: e.target.value })} /></Field>
+              <Field label="Expected return"><Input data-testid="vor-return-date" type="date" value={vorForm.expected_return} onChange={(e) => setVorForm({ ...vorForm, expected_return: e.target.value })} /></Field>
+            </div>
+          </div>
+          <DialogFooter><Button data-testid="save-vor-button" onClick={saveVor} className="bg-red-600 hover:bg-red-700">Mark VOR &amp; add to calendar</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!soldFor} onOpenChange={(o) => !o && setSoldFor(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle className="font-heading">Mark {soldFor?.registration} as sold / disposed</DialogTitle>
+            <DialogDescription>Keeps the vehicle and all its records on file (excluded from your compliance score). DVSA requires records to be retained for 18 months after disposal — this appears in the Records Retention tracker.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Field label="Date sold / disposed"><Input data-testid="sold-date" type="date" value={soldForm.sold_date} onChange={(e) => setSoldForm({ ...soldForm, sold_date: e.target.value })} /></Field>
+            <Field label="Notes"><Input data-testid="sold-notes" value={soldForm.notes} onChange={(e) => setSoldForm({ ...soldForm, notes: e.target.value })} placeholder="e.g. sold to ABC Haulage, weighbridge ticket #123" /></Field>
+          </div>
+          <DialogFooter><Button data-testid="save-sold-button" onClick={saveSold} className="bg-amber-600 hover:bg-amber-700">Mark sold — retain 18 months</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

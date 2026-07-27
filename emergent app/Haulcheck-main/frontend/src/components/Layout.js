@@ -260,7 +260,18 @@ export default function Layout({ children }) {
 
         <ImpersonationBanner />
         <VerifyEmailBanner />
-        <main className="flex-1 p-6 sm:p-8 md:p-10 max-w-[1680px] w-full mx-auto">{children}</main>
+        <main className="flex-1 p-6 sm:p-8 md:p-10 max-w-[1680px] w-full mx-auto">
+          {/* Reads org_role, not role: a viewer is a member of the organisation
+              with a read-only role, so `role` is "manager" for them like everyone
+              else. Without this banner the app silently rejects every save. */}
+          {user?.org_role === "viewer" && (
+            <div data-testid="viewer-banner" className="mb-6 flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm text-sky-800">
+              <Globe size={15} className="shrink-0" />
+              <span><span className="font-semibold">Read-only access.</span> You can view everything but changes are disabled.</span>
+            </div>
+          )}
+          {children}
+        </main>
       </div>
       <AuditReportDialog open={auditOpen} onOpenChange={setAuditOpen} />
     </div>
