@@ -51,6 +51,7 @@ function AppRouter() {
       <Route path="/maintenance" element={<Protected><Maintenance /></Protected>} />
       <Route path="/inspections" element={<Navigate to="/maintenance" replace />} />
       <Route path="/vehicles" element={<Protected><Vehicles /></Protected>} />
+      <Route path="/fleet" element={<Navigate to="/vehicles" replace />} />
       <Route path="/drivers" element={<Protected><Drivers /></Protected>} />
       <Route path="/tacho" element={<Protected><Tacho /></Protected>} />
       <Route path="/office" element={<Protected><Office /></Protected>} />

@@ -16,6 +16,8 @@ import { QRCodeSVG } from "qrcode.react";
 const empty = { name: "", licence_number: "", licence_expiry: "", cpc_expiry: "", tacho_card_expiry: "", licence_check_date: "", licence_check_code: "", penalty_points: 0, licence_check_due: "", weekly_hours: 0, max_weekly_hours: 56, assigned_vehicle_reg: "", notes: "" };
 const DRIVER_DOC_TYPES = ["Driver Infringement", "Infringement Report", "Warning Letter", "Attestation Record", "Indoctrination Document", "Adhoc Note", "Other"];
 const emptyDoc = { title: "", doc_type: "Driver Infringement", reference: "", expiry_date: "", notes: "", attachments: [] };
+const lcEmpty = () => ({ check_date: new Date().toISOString().slice(0, 10), check_code: "", points: 0, result: "clean", next_check_due: "", notes: "" });
+const LC_RESULTS = [["clean", "Clean licence"], ["points", "Points / endorsements"], ["disqualified", "Disqualified"], ["other", "Other"]];
 
 export default function Drivers() {
   const [items, setItems] = useState([]);
@@ -30,6 +32,9 @@ export default function Drivers() {
   const [cpcFor, setCpcFor] = useState(null);
   const [cpcForm, setCpcForm] = useState({ course_name: "", hours: "", completed_date: new Date().toISOString().slice(0, 10), provider: "" });
   const [qrFor, setQrFor] = useState(null);
+  const [lcFor, setLcFor] = useState(null);
+  const [lcForm, setLcForm] = useState(lcEmpty());
+  const [lcHistory, setLcHistory] = useState([]);
 
   const load = async () => {
     const [d, t, docs, v] = await Promise.all([api.get("/drivers"), api.get("/training"), api.get("/documents"), api.get("/vehicles")]);
@@ -90,6 +95,30 @@ export default function Drivers() {
     } catch { toast.error("Could not log training"); }
   };
 
+  const openLc = async (d) => {
+    setLcFor(d); setLcForm(lcEmpty());
+    try { const { data } = await api.get(`/licence-checks?driver_id=${d.id}`); setLcHistory(data); }
+    catch { setLcHistory([]); }
+  };
+  const saveLc = async () => {
+    if (!lcForm.check_date) { toast.error("Enter the check date"); return; }
+    try {
+      await api.post("/licence-checks", {
+        driver_id: lcFor.id, driver_name: lcFor.name,
+        check_date: lcForm.check_date || null, check_code: lcForm.check_code,
+        points: Number(lcForm.points) || 0, result: lcForm.result,
+        next_check_due: lcForm.next_check_due || null, notes: lcForm.notes,
+      });
+      toast.success("Licence check logged");
+      const { data } = await api.get(`/licence-checks?driver_id=${lcFor.id}`);
+      setLcHistory(data); setLcForm(lcEmpty()); load();
+    } catch { toast.error("Could not log licence check"); }
+  };
+  const deleteLc = async (id) => {
+    try { await api.delete(`/licence-checks/${id}`); setLcHistory((h) => h.filter((x) => x.id !== id)); load(); }
+    catch { toast.error("Could not delete"); }
+  };
+
   return (
     <div data-testid="drivers-page">
       <Header title="Drivers" subtitle="Licence, CPC, tachograph card & weekly hours" onAdd={openNew} addTestId="add-driver-button" addLabel="Add Driver" />
@@ -130,7 +159,8 @@ export default function Drivers() {
                   <Row label="Licence" status={d.licence_status} date={d.licence_expiry} />
                   <Row label="CPC" status={d.cpc_status} date={d.cpc_expiry} />
                   <Row label="Tacho Card" status={d.tacho_status} date={d.tacho_card_expiry} />
-                  <Row label="Licence Check" status={d.licence_check_status} date={d.licence_check_due} />
+                  <Row label="Licence Check" status={d.licence_check_status} date={d.licence_check_due}
+                    action={<button data-testid="log-licence-check-button" onClick={() => openLc(d)} className="text-[11px] font-semibold text-slate-400 hover:text-slate-900">+ Log check</button>} />
                 </div>
                 <div className="mt-3 rounded-md bg-slate-50 px-3 py-2.5" data-testid="driver-cpc-hours">
                   <div className="flex items-center justify-between text-sm mb-1.5">
@@ -301,14 +331,57 @@ export default function Drivers() {
           )}
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!lcFor} onOpenChange={(o) => !o && setLcFor(null)}>
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle className="font-heading">Licence check log — {lcFor?.name}</DialogTitle>
+            <DialogDescription>Record each DVLA / NDLS licence check. The latest check updates the driver's headline status.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Check date *"><Input data-testid="lc-date" type="date" value={lcForm.check_date} onChange={(e) => setLcForm({ ...lcForm, check_date: e.target.value })} /></Field>
+              <Field label="Next check due"><Input data-testid="lc-due" type="date" value={lcForm.next_check_due} onChange={(e) => setLcForm({ ...lcForm, next_check_due: e.target.value })} /></Field>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Check / share code"><Input data-testid="lc-code" value={lcForm.check_code} onChange={(e) => setLcForm({ ...lcForm, check_code: e.target.value })} placeholder="DVLA share code" /></Field>
+              <Field label="Penalty points"><Input data-testid="lc-points" type="number" value={lcForm.points} onChange={(e) => setLcForm({ ...lcForm, points: e.target.value })} /></Field>
+            </div>
+            <Field label="Result">
+              <Select value={lcForm.result} onValueChange={(v) => setLcForm({ ...lcForm, result: v })}>
+                <SelectTrigger data-testid="lc-result"><SelectValue /></SelectTrigger>
+                <SelectContent>{LC_RESULTS.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
+              </Select>
+            </Field>
+            <Field label="Notes"><Input data-testid="lc-notes" value={lcForm.notes} onChange={(e) => setLcForm({ ...lcForm, notes: e.target.value })} placeholder="e.g. SP30 x2, expires 2027" /></Field>
+            <DialogFooter><Button data-testid="save-licence-check-button" onClick={saveLc} className="bg-black hover:bg-slate-800">Log Check</Button></DialogFooter>
+            <div className="border-t border-slate-100 pt-3" data-testid="lc-history">
+              <p className="text-[10px] uppercase tracking-widest text-slate-400 font-semibold mb-2">Check history ({lcHistory.length})</p>
+              {lcHistory.length === 0 ? <p className="text-xs text-slate-400">No checks logged yet.</p> : (
+                <div className="space-y-1.5">
+                  {lcHistory.map((c) => (
+                    <div key={c.id} data-testid="lc-history-item" className="flex items-center gap-2 text-xs border border-slate-100 rounded-md px-3 py-2">
+                      <span className="font-semibold text-slate-700 shrink-0">{c.check_date || "—"}</span>
+                      <span className="text-slate-500 min-w-0 flex-1 truncate">
+                        {(LC_RESULTS.find(([v]) => v === c.result) || [null, c.result])[1]}
+                        {c.points ? ` · ${c.points} pts` : ""}{c.check_code ? ` · ${c.check_code}` : ""}
+                      </span>
+                      <button data-testid="lc-delete" onClick={() => deleteLc(c.id)} className="text-slate-300 hover:text-red-600 shrink-0"><Trash2 size={13} /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function Row({ label, status, date }) {
+function Row({ label, status, date, action }) {
   return (
     <div className="flex items-center justify-between text-sm">
-      <span className="text-slate-500">{label}</span>
+      <span className="text-slate-500 flex items-center gap-2">{label}{action}</span>
       <div className="flex items-center gap-2">
         <span className="text-xs text-slate-400">{date || "—"}</span>
         <StatusBadge status={status} />

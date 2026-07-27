@@ -35,6 +35,7 @@ const relTime = (iso) => {
 
 export default function Team() {
   const [email, setEmail] = useState("");
+  const [role, setRole] = useState("manager");
   const [busy, setBusy] = useState(false);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -53,7 +54,7 @@ export default function Team() {
     e.preventDefault();
     setBusy(true);
     try {
-      const res = await api.post("/invitations", { email: email.trim(), base_url: window.location.origin });
+      const res = await api.post("/invitations", { email: email.trim(), role, base_url: window.location.origin });
       if (res.data?.email_sent) {
         toast.success("Invitation email sent");
       } else {
@@ -140,11 +141,30 @@ export default function Team() {
               <Input data-testid="invite-email-input" id="invite-email" type="email" required value={email}
                 onChange={(e) => setEmail(e.target.value)} placeholder="operator@company.co.uk" className="mt-1.5" />
             </div>
+            <div>
+              <Label className="mb-1.5 block">Access level</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <button type="button" data-testid="role-manager" onClick={() => setRole("manager")}
+                  className={`rounded-md border px-3 py-2.5 text-left transition-all ${role === "manager" ? "border-slate-900 bg-slate-50 ring-1 ring-slate-900" : "border-slate-200 hover:border-slate-300"}`}>
+                  <p className="text-sm font-semibold text-slate-900">Operator</p>
+                  <p className="text-[11px] text-slate-500 leading-snug mt-0.5">Own separate account</p>
+                </button>
+                <button type="button" data-testid="role-viewer" onClick={() => setRole("viewer")}
+                  className={`rounded-md border px-3 py-2.5 text-left transition-all ${role === "viewer" ? "border-slate-900 bg-slate-50 ring-1 ring-slate-900" : "border-slate-200 hover:border-slate-300"}`}>
+                  <p className="text-sm font-semibold text-slate-900">Viewer (read-only)</p>
+                  <p className="text-[11px] text-slate-500 leading-snug mt-0.5">Sees your records, can't edit</p>
+                </button>
+              </div>
+            </div>
             <Button data-testid="send-invite-button" type="submit" disabled={busy}
               className="w-full bg-black hover:bg-slate-800 rounded-md gap-2">
               <Mail size={16} /> {busy ? "Sending…" : "Send invitation"}
             </Button>
-            <p className="text-xs text-slate-400 leading-relaxed">The invitee receives an email with a secure link to choose a password. Their account is completely separate from yours — they can only view and edit their own records.</p>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              {role === "viewer"
+                ? "A Viewer (e.g. your Transport Manager) can log in and see every page of your account, but cannot add, edit or delete anything."
+                : "An Operator gets their own completely separate account with a secure link to choose a password — they only see their own records."}
+            </p>
           </form>
         </div>
 
@@ -169,7 +189,7 @@ export default function Team() {
                     </p>
                     {inv.status === "accepted" && (
                       <span data-testid={`isolated-badge-${inv.id}`} className="inline-flex items-center gap-1 mt-1 text-[11px] font-medium text-slate-500">
-                        <ShieldCheck size={12} className="text-emerald-600" /> Own isolated records
+                        <ShieldCheck size={12} className={inv.role === "viewer" ? "text-sky-600" : "text-emerald-600"} /> {inv.role === "viewer" ? "Read-only viewer" : "Own isolated records"}
                       </span>
                     )}
                   </div>

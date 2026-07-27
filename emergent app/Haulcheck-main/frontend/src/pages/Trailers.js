@@ -13,7 +13,7 @@ import { getTerms } from "@/lib/terms";
 import { downloadPdf } from "@/lib/download";
 
 const TYPES = ["Curtainsider", "Flatbed", "Refrigerated", "Tanker", "Skeletal", "Box", "Low Loader", "Other"];
-const empty = { trailer_number: "", type: "Curtainsider", mot_due: "", service_due: "", vor: false, vor_reason: "", notes: "" };
+const empty = { trailer_number: "", type: "Curtainsider", mot_due: "", service_due: "", vor: false, vor_reason: "", sold: false, sold_date: "", sold_notes: "", notes: "" };
 
 const LocalField = ({ label, children }) => (<div><Label className="mb-1.5 block">{label}</Label>{children}</div>);
 const LocalEmpty = ({ text }) => (
@@ -40,7 +40,7 @@ export function TrailersPanel() {
 
   const save = async (e) => {
     e.preventDefault();
-    const payload = { ...form, mot_due: form.mot_due || null, service_due: form.service_due || null };
+    const payload = { ...form, mot_due: form.mot_due || null, service_due: form.service_due || null, sold_date: form.sold_date || null };
     try {
       if (editId) await api.put(`/trailers/${editId}`, payload);
       else await api.post("/trailers", payload);
@@ -74,7 +74,8 @@ export function TrailersPanel() {
                   <td className="px-5 py-3 font-bold text-slate-900">
                     <div className="flex items-center gap-2">
                       {t.trailer_number}
-                      {t.vor && <span data-testid="trailer-vor-badge" className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700" title={t.vor_reason || "Off road"}>VOR</span>}
+                      {t.vor && !t.sold && <span data-testid="trailer-vor-badge" className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-red-100 text-red-700" title={t.vor_reason || "Off road"}>VOR</span>}
+                      {t.sold && <span data-testid="trailer-sold-badge" className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title={t.sold_notes || `Sold / disposed${t.sold_date ? ` ${t.sold_date}` : ""}`}>SOLD</span>}
                     </div>
                   </td>
                   <td className="px-5 py-3 text-slate-600">{t.type}</td>
@@ -115,6 +116,19 @@ export function TrailersPanel() {
                 <Input data-testid="trl-vor-reason" value={form.vor_reason} onChange={(e) => setForm({ ...form, vor_reason: e.target.value })} placeholder="Reason (e.g. awaiting parts)" className="mt-3" />
               )}
               <p className="text-xs text-slate-400 mt-2">Off-road trailers are flagged and excluded from compliance due/overdue alerts.</p>
+            </div>
+            <div className="rounded-md border border-slate-200 p-3">
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input data-testid="trl-sold" type="checkbox" checked={!!form.sold} onChange={(e) => setForm({ ...form, sold: e.target.checked })} className="h-4 w-4 rounded border-slate-300 accent-amber-600" />
+                <span className="text-sm font-semibold text-slate-800">Sold / Disposed</span>
+              </label>
+              {form.sold && (
+                <div className="mt-3 space-y-3">
+                  <Input data-testid="trl-sold-date" type="date" value={form.sold_date || ""} onChange={(e) => setForm({ ...form, sold_date: e.target.value })} />
+                  <Input data-testid="trl-sold-notes" value={form.sold_notes} onChange={(e) => setForm({ ...form, sold_notes: e.target.value })} placeholder="Notes (e.g. sold to ABC Haulage)" />
+                </div>
+              )}
+              <p className="text-xs text-slate-400 mt-2">Sold trailers stay on file (excluded from compliance) and appear in the 18-month Records Retention tracker.</p>
             </div>
             <DialogFooter><Button data-testid="save-trailer-button" type="submit" className="bg-black hover:bg-slate-800">{editId ? "Save Changes" : "Add Trailer"}</Button></DialogFooter>
           </form>

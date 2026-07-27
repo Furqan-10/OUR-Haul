@@ -13,14 +13,19 @@ import { SignaturePad } from "@/components/SignaturePad";
 import { downloadPdf } from "@/lib/download";
 
 const DAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
-const ALL_ITEMS = CHECKLIST.flatMap((s) => s.items.map((item) => ({ section: s.section, item })));
+const WD = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const WD_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
 
-const mondayOf = (iso) => {
-  const d = iso ? new Date(iso) : new Date();
-  const day = (d.getDay() + 6) % 7; // 0 = Monday
-  d.setDate(d.getDate() - day);
-  return d.toISOString().slice(0, 10);
+// Ordered columns beginning on the sheet's start date (supports mid-week starts)
+const weekCols = (weekStart) => {
+  const start = new Date(`${weekStart || new Date().toISOString().slice(0, 10)}T00:00:00`);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const key = WD[(d.getDay() + 6) % 7];
+    return { key, date: d, label: `${WD_LABEL[key]} ${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}` };
+  });
 };
+
 const total = (a, b) => {
   const s = parseInt(String(a).replace(/,/g, ""), 10);
   const f = parseInt(String(b).replace(/,/g, ""), 10);
@@ -30,18 +35,13 @@ const daysDone = (rec) => DAYS.filter(([k]) => (rec.days?.[k]?.checklist || []).
 const defectCount = (rec) =>
   DAYS.reduce((n, [k]) => n + (rec.days?.[k]?.checklist || []).filter((c) => !c.ok).length, 0);
 
-const dayDate = (weekStart, idx) => {
-  const d = new Date(`${weekStart}T00:00:00`);
-  d.setDate(d.getDate() + idx);
-  return d;
-};
-// a weekday counts as "missed" if its date is already in the past and it has no check recorded
-const isMissed = (rec, idx, key) => {
-  if ((rec.days?.[key]?.checklist || []).length > 0) return false;
+// a column counts as "missed" if its date is in the past and it has no check recorded
+const isMissedCol = (rec, col) => {
+  if ((rec.days?.[col.key]?.checklist || []).length > 0) return false;
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  return dayDate(rec.week_start, idx) < today;
+  return col.date < today;
 };
-const missedCount = (rec) => DAYS.filter(([k], i) => isMissed(rec, i, k)).length;
+const missedCount = (rec) => weekCols(rec.week_start).filter((c) => isMissedCol(rec, c)).length;
 
 // cell value for an item on a day: true=ok, false=defect, null=not recorded
 const cellFor = (rec, dayKey, itemName) => {
@@ -55,7 +55,7 @@ export function WeeklyWalkaroundPanel() {
   const [assets, setAssets] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [newOpen, setNewOpen] = useState(false);
-  const [nf, setNf] = useState({ vehicle_reg: "", driver_name: "", week_start: mondayOf(), mileage_start: "" });
+  const [nf, setNf] = useState({ vehicle_reg: "", driver_name: "", week_start: new Date().toISOString().slice(0, 10), mileage_start: "" });
   const [edit, setEdit] = useState(null); // full record being edited
 
   const load = async () => {
@@ -71,9 +71,9 @@ export function WeeklyWalkaroundPanel() {
   const createSheet = async () => {
     if (!nf.vehicle_reg) return toast.error("Select a vehicle");
     try {
-      const { data } = await api.post("/weekly-walkarounds", { ...nf, week_start: mondayOf(nf.week_start) });
+      const { data } = await api.post("/weekly-walkarounds", { ...nf });
       toast.success("Weekly sheet created");
-      setNewOpen(false); setNf({ vehicle_reg: "", driver_name: "", week_start: mondayOf(), mileage_start: "" });
+      setNewOpen(false); setNf({ vehicle_reg: "", driver_name: "", week_start: new Date().toISOString().slice(0, 10), mileage_start: "" });
       await load();
       setEdit(data);
     } catch { toast.error("Could not create sheet"); }
@@ -109,15 +109,15 @@ export function WeeklyWalkaroundPanel() {
                   <button data-testid="delete-weekly-button" onClick={() => remove(a.id)} className="text-slate-400 hover:text-red-600 p-1"><Trash2 size={15} /></button>
                 </div>
                 <div className="flex items-center gap-1 mt-3">
-                  {DAYS.map(([k, lbl], i) => {
-                    const filled = (a.days?.[k]?.checklist || []).length > 0;
-                    const hasDefect = (a.days?.[k]?.checklist || []).some((c) => !c.ok);
-                    const missed = isMissed(a, i, k);
+                  {weekCols(a.week_start).map((col) => {
+                    const filled = (a.days?.[col.key]?.checklist || []).length > 0;
+                    const hasDefect = (a.days?.[col.key]?.checklist || []).some((c) => !c.ok);
+                    const missed = isMissedCol(a, col);
                     const cls = filled
                       ? (hasDefect ? "bg-amber-100 text-amber-700" : "bg-green-100 text-green-700")
                       : missed ? "bg-red-100 text-red-600" : "bg-slate-100 text-slate-400";
                     return (
-                      <div key={k} data-testid={`weekly-card-day-${k}`} className={`flex-1 text-center text-[10px] font-bold py-1.5 rounded ${cls}`}>{lbl}</div>
+                      <div key={col.key} title={col.label} data-testid={`weekly-card-day-${col.key}`} className={`flex-1 text-center text-[10px] font-bold py-1.5 rounded ${cls}`}>{WD_LABEL[col.key]}</div>
                     );
                   })}
                 </div>
@@ -139,7 +139,7 @@ export function WeeklyWalkaroundPanel() {
       <Dialog open={newOpen} onOpenChange={setNewOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>New weekly walkaround sheet</DialogTitle>
-            <DialogDescription>Create a Mon–Sun check sheet for one vehicle. It snaps to the Monday of the chosen week.</DialogDescription>
+            <DialogDescription>Create a 7-day check sheet for one vehicle. It can start on any day (e.g. a Tuesday).</DialogDescription>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Vehicle *">
@@ -154,10 +154,10 @@ export function WeeklyWalkaroundPanel() {
                 <SelectContent>{drivers.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}</SelectContent>
               </Select>
             </Field>
-            <Field label="Week commencing"><Input data-testid="weekly-week" type="date" value={nf.week_start} onChange={(e) => setNf({ ...nf, week_start: e.target.value })} /></Field>
+            <Field label="Start date (any day)"><Input data-testid="weekly-week" type="date" value={nf.week_start} onChange={(e) => setNf({ ...nf, week_start: e.target.value })} /></Field>
             <Field label="Mileage start"><Input data-testid="weekly-mileage-start" value={nf.mileage_start} onChange={(e) => setNf({ ...nf, mileage_start: e.target.value })} /></Field>
           </div>
-          <p className="text-xs text-slate-400">The sheet snaps to the Monday of the chosen week. Drivers can fill it day-by-day from the driver app, or you can complete it here.</p>
+          <p className="text-xs text-slate-400">The 7 columns run from your chosen start date. Drivers can fill it day-by-day from the driver app, or you can complete it here.</p>
           <DialogFooter><Button data-testid="save-weekly-button" onClick={createSheet} className="bg-black hover:bg-slate-800">Create sheet</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -221,7 +221,7 @@ function WeeklyEditor({ record, onClose, onSaved }) {
             <thead>
               <tr className="bg-slate-900 text-white">
                 <th className="text-left px-3 py-2 font-semibold sticky left-0 bg-slate-900">Check item</th>
-                {DAYS.map(([k, lbl]) => <th key={k} className="px-2 py-2 font-semibold text-center w-12">{lbl}</th>)}
+                {weekCols(rec.week_start).map((col) => <th key={col.key} className="px-2 py-2 font-semibold text-center w-14 text-[11px] leading-tight">{col.label}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -231,13 +231,13 @@ function WeeklyEditor({ record, onClose, onSaved }) {
                   {sec.items.map((item) => (
                     <tr key={item} className="border-t border-slate-100">
                       <td className="px-3 py-1.5 text-slate-700 sticky left-0 bg-white">{item}</td>
-                      {DAYS.map(([k]) => {
-                        const v = cellFor(rec, k, item);
+                      {weekCols(rec.week_start).map((col) => {
+                        const v = cellFor(rec, col.key, item);
                         return (
-                          <td key={k} className="px-1 py-1 text-center">
+                          <td key={col.key} className="px-1 py-1 text-center">
                             <button
-                              data-testid={`weekly-cell-${k}`}
-                              onClick={() => setCell(k, { section: sec.section, item })}
+                              data-testid={`weekly-cell-${col.key}`}
+                              onClick={() => setCell(col.key, { section: sec.section, item })}
                               className={`w-8 h-7 rounded flex items-center justify-center mx-auto border ${v === true ? "bg-green-600 border-green-600 text-white" : v === false ? "bg-red-600 border-red-600 text-white" : "border-slate-200 text-slate-300 hover:bg-slate-50"}`}
                             >
                               {v === true ? <Check size={14} /> : v === false ? <X size={14} /> : <Minus size={12} />}

@@ -255,8 +255,18 @@ function DriverWalkaround({ driver, back }) {
 }
 
 // ---------- Weekly Walkaround ----------
-const DAY_LABELS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
-const todayKey = () => DAY_LABELS[(new Date().getDay() + 6) % 7][0];
+const _WD = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const _WD_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+const todayKey = () => _WD[(new Date().getDay() + 6) % 7];
+// Ordered columns beginning on the sheet's start date (supports mid-week starts)
+const driverWeekCols = (weekStart) => {
+  const start = new Date(`${weekStart || new Date().toISOString().slice(0, 10)}T00:00:00`);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const key = _WD[(d.getDay() + 6) % 7];
+    return { key, date: d, label: `${_WD_LABEL[key]} ${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}` };
+  });
+};
 
 function DriverWeeklyWalkaround({ driver, back }) {
   const [sheet, setSheet] = useState(null);
@@ -279,11 +289,10 @@ function DriverWeeklyWalkaround({ driver, back }) {
   const tKey = todayKey();
   const todayDone = (sheet?.days?.[tKey]?.checklist || []).length > 0;
   const needSignature = sheet && !sheet.driver_signature;
-  const missedDays = !sheet?.week_start ? 0 : DAY_LABELS.filter(([k], i) => {
-    if ((sheet?.days?.[k]?.checklist || []).length > 0) return false;
-    const d = new Date(`${sheet.week_start}T00:00:00`); d.setDate(d.getDate() + i);
+  const missedDays = !sheet?.week_start ? 0 : driverWeekCols(sheet.week_start).filter((col) => {
+    if ((sheet?.days?.[col.key]?.checklist || []).length > 0) return false;
     const t = new Date(); t.setHours(0, 0, 0, 0);
-    return d < t;
+    return col.date < t;
   }).length;
 
   const submit = async () => {
@@ -355,20 +364,19 @@ function DriverWeeklyWalkaround({ driver, back }) {
           <span className="text-xs text-slate-400">w/c {sheet?.week_start}</span>
         </div>
         <div className="flex items-center gap-1.5 mt-4">
-          {DAY_LABELS.map(([k, lbl], i) => {
-            const filled = (sheet?.days?.[k]?.checklist || []).length > 0;
-            const hasDefect = (sheet?.days?.[k]?.checklist || []).some((c) => !c.ok);
+          {driverWeekCols(sheet?.week_start).map((col) => {
+            const filled = (sheet?.days?.[col.key]?.checklist || []).length > 0;
+            const hasDefect = (sheet?.days?.[col.key]?.checklist || []).some((c) => !c.ok);
             let missed = false;
-            if (!filled && sheet?.week_start) {
-              const d = new Date(`${sheet.week_start}T00:00:00`); d.setDate(d.getDate() + i);
+            if (!filled) {
               const t = new Date(); t.setHours(0, 0, 0, 0);
-              missed = d < t;
+              missed = col.date < t;
             }
             const cls = filled
               ? (hasDefect ? "bg-amber-500/25 text-amber-200" : "bg-emerald-500/25 text-emerald-200")
               : missed ? "bg-red-500/25 text-red-300" : "bg-slate-800 text-slate-500";
             return (
-              <div key={k} data-testid={`weekly-day-${k}`} className={`flex-1 text-center text-[11px] font-bold py-2 rounded-lg ${k === tKey ? "ring-2 ring-white/40 " : ""}${cls}`}>{lbl}</div>
+              <div key={col.key} title={col.label} data-testid={`weekly-day-${col.key}`} className={`flex-1 text-center text-[11px] font-bold py-2 rounded-lg ${col.key === tKey ? "ring-2 ring-white/40 " : ""}${cls}`}>{_WD_LABEL[col.key]}</div>
             );
           })}
         </div>

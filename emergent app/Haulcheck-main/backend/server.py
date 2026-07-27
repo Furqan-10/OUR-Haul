@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Query
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -73,6 +74,32 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 
+_VIEWER_EXEMPT_PATHS = {
+    "/api/auth/login", "/api/auth/register", "/api/auth/session", "/api/auth/logout",
+    "/api/auth/accept-invite", "/api/auth/forgot-password", "/api/auth/reset-password",
+}
+
+
+@app.middleware("http")
+async def viewer_write_guard(request: Request, call_next):
+    """Block all mutating requests from read-only 'viewer' users (server-side enforcement)."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return await call_next(request)
+    path = request.url.path
+    if not path.startswith("/api") or path in _VIEWER_EXEMPT_PATHS or path.startswith("/api/driver/"):
+        return await call_next(request)
+    try:
+        cookie_token = request.cookies.get("session_token")
+        auth = request.headers.get("Authorization")
+        bearer = auth.split(" ", 1)[1] if auth and auth.startswith("Bearer ") else None
+        u = await _authenticate(cookie_token, bearer)
+        if u and u.role == "viewer":
+            return JSONResponse(status_code=403, content={"detail": "You have read-only access — changes aren't permitted."})
+    except Exception:
+        pass
+    return await call_next(request)
+
+
 # ---------- Helpers ----------
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -117,6 +144,7 @@ class LoginInput(BaseModel):
 class InviteInput(BaseModel):
     email: EmailStr
     base_url: str = ""
+    role: str = "manager"  # "manager" (own isolated account) or "viewer" (read-only into inviter's account)
 
 
 class ForgotPasswordInput(BaseModel):
@@ -142,6 +170,7 @@ class User(BaseModel):
     role: str = "manager"
     region: str = "UK"
     picture: Optional[str] = None
+    account_owner_id: Optional[str] = None
 
 
 class Attachment(BaseModel):
@@ -180,6 +209,11 @@ class Vehicle(BaseModel):
     speed_limiter_due: Optional[str] = None
     vor: bool = False
     vor_reason: str = ""
+    vor_off_date: Optional[str] = None
+    vor_expected_return: Optional[str] = None
+    sold: bool = False
+    sold_date: Optional[str] = None
+    sold_notes: str = ""
     notes: str = ""
     created_at: str = Field(default_factory=now_iso)
 
@@ -197,6 +231,11 @@ class VehicleInput(BaseModel):
     speed_limiter_due: Optional[str] = None
     vor: bool = False
     vor_reason: str = ""
+    vor_off_date: Optional[str] = None
+    vor_expected_return: Optional[str] = None
+    sold: bool = False
+    sold_date: Optional[str] = None
+    sold_notes: str = ""
     notes: str = ""
 
 
@@ -209,6 +248,9 @@ class Trailer(BaseModel):
     service_due: Optional[str] = None
     vor: bool = False
     vor_reason: str = ""
+    sold: bool = False
+    sold_date: Optional[str] = None
+    sold_notes: str = ""
     notes: str = ""
     created_at: str = Field(default_factory=now_iso)
 
@@ -220,6 +262,9 @@ class TrailerInput(BaseModel):
     service_due: Optional[str] = None
     vor: bool = False
     vor_reason: str = ""
+    sold: bool = False
+    sold_date: Optional[str] = None
+    sold_notes: str = ""
     notes: str = ""
 
 
@@ -582,6 +627,31 @@ class TrainingInput(BaseModel):
     attachments: List[Attachment] = []
 
 
+class LicenceCheckRecord(BaseModel):
+    id: str = Field(default_factory=lambda: f"lc_{uuid.uuid4().hex[:10]}")
+    user_id: str = ""
+    driver_id: str = ""
+    driver_name: str = ""
+    check_date: Optional[str] = None
+    check_code: str = ""
+    points: int = 0
+    result: str = "clean"  # clean | points | disqualified | other
+    next_check_due: Optional[str] = None
+    notes: str = ""
+    created_at: str = Field(default_factory=now_iso)
+
+
+class LicenceCheckInput(BaseModel):
+    driver_id: str = ""
+    driver_name: str = ""
+    check_date: Optional[str] = None
+    check_code: str = ""
+    points: int = 0
+    result: str = "clean"
+    next_check_due: Optional[str] = None
+    notes: str = ""
+
+
 class WheelAudit(BaseModel):
     id: str = Field(default_factory=lambda: f"wsa_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
@@ -634,6 +704,56 @@ class ServiceInput(BaseModel):
     attachments: List[Attachment] = []
 
 
+class RepairRecord(BaseModel):
+    id: str = Field(default_factory=lambda: f"rep_{uuid.uuid4().hex[:10]}")
+    user_id: str = ""
+    vehicle_reg: str
+    repair_date: Optional[str] = None
+    category: str = "Major repair"
+    description: str = ""
+    provider: str = ""
+    cost: float = 0
+    odometer: float = 0
+    notes: str = ""
+    attachments: List[Attachment] = []
+    created_at: str = Field(default_factory=now_iso)
+
+
+class RepairInput(BaseModel):
+    vehicle_reg: str
+    repair_date: Optional[str] = None
+    category: str = "Major repair"
+    description: str = ""
+    provider: str = ""
+    cost: float = 0
+    odometer: float = 0
+    notes: str = ""
+    attachments: List[Attachment] = []
+
+
+class RecallRecord(BaseModel):
+    id: str = Field(default_factory=lambda: f"rcl_{uuid.uuid4().hex[:10]}")
+    user_id: str = ""
+    vehicle_reg: str = ""
+    reference: str = ""
+    title: str = ""
+    issued_date: Optional[str] = None
+    status: str = "outstanding"  # outstanding | actioned
+    actioned_date: Optional[str] = None
+    notes: str = ""
+    created_at: str = Field(default_factory=now_iso)
+
+
+class RecallInput(BaseModel):
+    vehicle_reg: str = ""
+    reference: str = ""
+    title: str = ""
+    issued_date: Optional[str] = None
+    status: str = "outstanding"
+    actioned_date: Optional[str] = None
+    notes: str = ""
+
+
 class WalkaroundCheck(BaseModel):
     id: str = Field(default_factory=lambda: f"wac_{uuid.uuid4().hex[:10]}")
     user_id: str = ""
@@ -671,9 +791,18 @@ WEEK_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
 def week_start_of(d: Optional[str] = None) -> str:
-    """Monday (ISO date) of the week containing d (or today if None)."""
+    """The chosen start date as-is (or today). Weekly sheets can start on ANY weekday."""
     dt = datetime.fromisoformat(d).date() if d else datetime.now(timezone.utc).date()
-    return (dt - timedelta(days=dt.weekday())).isoformat()
+    return dt.isoformat()
+
+
+def weekly_columns(week_start: str):
+    """Ordered (weekday_key, date_iso) for the 7 columns, beginning on the sheet's start date."""
+    try:
+        start = datetime.fromisoformat(week_start).date()
+    except Exception:
+        start = datetime.now(timezone.utc).date()
+    return [(WEEK_DAYS[(start + timedelta(days=i)).weekday()], (start + timedelta(days=i)).isoformat()) for i in range(7)]
 
 
 class WeeklyWalkaround(BaseModel):
@@ -842,6 +971,12 @@ async def get_current_user(request: Request) -> User:
     user = await _authenticate(cookie_token, bearer)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    # A read-only "viewer" (e.g. a Transport Manager) sees the inviting operator's data.
+    if user.role == "viewer" and user.account_owner_id:
+        owner = await db.users.find_one({"user_id": user.account_owner_id}, {"_id": 0})
+        if owner:
+            user.user_id = user.account_owner_id
+            user.region = owner.get("region", "UK")
     return user
 
 
@@ -888,19 +1023,25 @@ async def create_invitation(data: InviteInput, user: User = Depends(get_current_
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="That email already has an account")
     token = secrets.token_urlsafe(32)
+    role = "viewer" if data.role == "viewer" else "manager"
     inv = {
-        "id": f"inv_{uuid.uuid4().hex[:10]}", "email": email, "token": token,
+        "id": f"inv_{uuid.uuid4().hex[:10]}", "email": email, "token": token, "role": role,
         "invited_by": user.user_id, "inviter_name": user.name, "status": "pending",
         "created_at": now_iso(), "expires_at": (datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
     }
     await db.invitations.insert_one(inv)
     link = f"{(data.base_url or '').rstrip('/')}/accept-invite?token={token}"
+    intro = (
+        f"{user.name} has given you <b>read-only access</b> to their HaulCheck compliance account, so you can review vehicles, drivers and records without making changes. Click below to set a password."
+        if role == "viewer" else
+        f"{user.name} has invited you to set up your own HaulCheck compliance account. Click below to choose a password and get started."
+    )
     html = (
         "<div style='background:#f1f5f9;padding:32px 0;font-family:Arial,Helvetica,sans-serif;'>"
         "<table role='presentation' width='560' align='center' cellpadding='0' cellspacing='0' style='background:#fff;border-radius:12px;padding:32px;margin:0 auto;'>"
         f"<tr><td><p style='margin:0;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#64748b;font-weight:700;'>HaulCheck Compliance</p>"
         f"<h1 style='margin:6px 0 0;font-size:22px;color:#0f172a;'>You've been invited</h1>"
-        f"<p style='margin:16px 0 0;font-size:14px;color:#334155;line-height:1.6;'>{user.name} has invited you to set up your own HaulCheck compliance account. Click below to choose a password and get started.</p>"
+        f"<p style='margin:16px 0 0;font-size:14px;color:#334155;line-height:1.6;'>{intro}</p>"
         f"<p style='margin:24px 0;'><a href='{link}' style='background:#0f172a;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:600;'>Accept invitation</a></p>"
         f"<p style='margin:8px 0 0;font-size:12px;color:#94a3b8;'>Or paste this link: {link}</p>"
         "<p style='margin:16px 0 0;font-size:12px;color:#94a3b8;'>This invitation expires in 14 days.</p>"
@@ -986,16 +1127,23 @@ async def accept_invite(data: AcceptInviteInput, response: Response):
     if len(data.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     user_id = f"user_{uuid.uuid4().hex[:12]}"
-    await db.users.insert_one({
-        "user_id": user_id, "email": email, "name": data.name, "role": "manager",
-        "region": "UK", "picture": None, "password_hash": pwd_context.hash(data.password),
+    inv_role = "viewer" if inv.get("role") == "viewer" else "manager"
+    owner = await db.users.find_one({"user_id": inv["invited_by"]}, {"_id": 0}) or {}
+    user_doc = {
+        "user_id": user_id, "email": email, "name": data.name, "role": inv_role,
+        "region": owner.get("region", "UK") if inv_role == "viewer" else "UK",
+        "picture": None, "password_hash": pwd_context.hash(data.password),
         "invited_by": inv["invited_by"], "created_at": now_iso(), "last_login_at": now_iso(),
-    })
-    await _seed_template(user_id, inv["invited_by"], email)
+    }
+    if inv_role == "viewer":
+        user_doc["account_owner_id"] = inv["invited_by"]
+    await db.users.insert_one(user_doc)
+    if inv_role == "manager":
+        await _seed_template(user_id, inv["invited_by"], email)
     await db.invitations.update_one({"id": inv["id"]}, {"$set": {"status": "accepted", "accepted_at": now_iso(), "accepted_user_id": user_id}})
     fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0}) or {}
     response.delete_cookie("session_token", path="/")
-    return {"token": create_jwt(user_id), "user": {"user_id": user_id, "email": email, "name": data.name, "role": "manager", "region": fresh.get("region", "UK")}}
+    return {"token": create_jwt(user_id), "user": {"user_id": user_id, "email": email, "name": data.name, "role": inv_role, "region": fresh.get("region", "UK")}}
 
 
 @api_router.put("/settings/region")
@@ -1606,6 +1754,47 @@ async def delete_training(tid: str, user: User = Depends(get_current_user)):
     return {"ok": True}
 
 
+async def _sync_driver_licence_headline(user_id: str, driver_id: str):
+    """Recompute a driver's headline licence-check fields from their latest remaining check."""
+    if not driver_id:
+        return
+    latest = await db.licence_checks.find(
+        {"user_id": user_id, "driver_id": driver_id}, {"_id": 0}
+    ).sort("check_date", -1).to_list(1)
+    if latest:
+        r = latest[0]
+        vals = {"licence_check_date": r.get("check_date"), "licence_check_code": r.get("check_code", ""),
+                "penalty_points": r.get("points", 0), "licence_check_due": r.get("next_check_due")}
+    else:
+        vals = {"licence_check_date": None, "licence_check_code": "", "penalty_points": 0, "licence_check_due": None}
+    await db.drivers.update_one({"id": driver_id, "user_id": user_id}, {"$set": vals})
+
+
+@api_router.get("/licence-checks")
+async def list_licence_checks(driver_id: Optional[str] = Query(None), user: User = Depends(get_current_user)):
+    q = {"user_id": user.user_id}
+    if driver_id:
+        q["driver_id"] = driver_id
+    return await db.licence_checks.find(q, {"_id": 0}).sort("check_date", -1).to_list(1000)
+
+
+@api_router.post("/licence-checks")
+async def create_licence_check(data: LicenceCheckInput, user: User = Depends(get_current_user)):
+    lc = LicenceCheckRecord(**data.model_dump(), user_id=user.user_id)
+    await db.licence_checks.insert_one(lc.model_dump())
+    await _sync_driver_licence_headline(user.user_id, data.driver_id)
+    return lc.model_dump()
+
+
+@api_router.delete("/licence-checks/{lid}")
+async def delete_licence_check(lid: str, user: User = Depends(get_current_user)):
+    rec = await db.licence_checks.find_one({"id": lid, "user_id": user.user_id}, {"_id": 0})
+    await db.licence_checks.delete_one({"id": lid, "user_id": user.user_id})
+    if rec:
+        await _sync_driver_licence_headline(user.user_id, rec.get("driver_id"))
+    return {"ok": True}
+
+
 # ---------- Documents ----------
 @api_router.get("/documents")
 async def list_documents(user: User = Depends(get_current_user)):
@@ -2095,6 +2284,12 @@ async def _report_data(user_id, kinds, from_date=None, to_date=None):
     if "tacho" in kinds:
         tn = await db.tacho_analyses.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
         out["tacho"] = [d for d in tn if in_range(d, "created_at")]
+    if "repairs" in kinds:
+        rp = await db.repairs.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        out["repairs"] = [d for d in rp if in_range(d, "repair_date")]
+    if "recalls" in kinds:
+        rc = await db.recalls.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
+        out["recalls"] = [d for d in rc if in_range(d, "issued_date", "created_at")]
     if "pmi" in kinds:
         ps = await db.pmi_schedules.find({"user_id": user_id}, {"_id": 0}).to_list(2000)
         for d in ps:
@@ -2116,7 +2311,9 @@ _REPORT_BUILDERS = {
     "weekly_walkaround": (["weekly_walkaround"], lambda d, r: reports.weekly_walkaround_report(d["weekly_walkaround"], r)),
     "pmi": (["pmi"], lambda d, r: reports.pmi_report(d["pmi"], d["pmi_records"], r)),
     "tacho": (["tacho"], lambda d, r: reports.tacho_report(d["tacho"], r)),
-    "audit": (["vehicles", "trailers", "drivers", "defects", "service", "wheel", "walkaround", "weekly_walkaround", "tacho", "pmi"],
+    "repairs": (["repairs"], lambda d, r: reports.repairs_report(d["repairs"], r)),
+    "recalls": (["recalls"], lambda d, r: reports.recalls_report(d["recalls"], r)),
+    "audit": (["vehicles", "trailers", "drivers", "defects", "service", "repairs", "wheel", "walkaround", "weekly_walkaround", "tacho", "recalls", "pmi"],
               lambda d, r: reports.audit_pack(d, r)),
 }
 
@@ -2169,6 +2366,159 @@ async def download_report(kind: str, include_files: bool = Query(False), format:
     suffix = "-pack" if include_files else ""
     fname = f"{kind}-report{suffix}-{datetime.now(timezone.utc).date().isoformat()}.pdf"
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+def _norm_reg(s):
+    return "".join((s or "").split()).upper()
+
+
+@api_router.get("/reports/vehicle/{reg}")
+async def download_vehicle_history(reg: str, include_files: bool = Query(False), format: str = Query("pdf"),
+                                   user: User = Depends(get_current_user)):
+    nreg = _norm_reg(reg)
+    vehicles = await db.vehicles.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    vehicle = next((v for v in vehicles if _norm_reg(v.get("registration")) == nreg), None)
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    vehicle["mot_status"] = compliance_status(days_until(vehicle.get("mot_due")))
+
+    def match(records):
+        return [r for r in records if _norm_reg(r.get("vehicle_reg")) == nreg]
+
+    pmi_scheds = await db.pmi_schedules.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    for d in pmi_scheds:
+        d["status"] = compliance_status(days_until(d.get("next_due")))
+    pmi_recs = await db.pmi_records.find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
+    service = await db.service_records.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    for d in service:
+        d["status"] = compliance_status(days_until(d.get("next_service_due")))
+    wheel = await db.wheel_audits.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    for d in wheel:
+        d["status"] = compliance_status(days_until(d.get("next_due")))
+    defects = await db.defects.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    repairs = await db.repairs.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    walkaround = await db.walkaround_checks.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    weekly = await db.weekly_walkarounds.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    recalls = await db.recalls.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+    test_history = await db.test_history.find({"user_id": user.user_id}, {"_id": 0}).to_list(2000)
+
+    data = {
+        "pmi": match(pmi_scheds), "pmi_records": match(pmi_recs),
+        "test_history": match(test_history), "defects": match(defects),
+        "service": match(service), "repairs": match(repairs),
+        "wheel": match(wheel), "walkaround": match(walkaround),
+        "weekly_walkaround": match(weekly), "recalls": match(recalls),
+    }
+    title, subtitle, sections = reports.vehicle_history_report(vehicle, data, user.region)
+    operator = await db.operator.find_one({"user_id": user.user_id}, {"_id": 0}) or {}
+    authority = "RSA (Ireland)" if user.region == "IE" else "DVSA (UK)"
+    file_keys = ("pmi_records", "defects", "service", "repairs", "wheel", "walkaround", "test_history", "recalls")
+    fids = [a["file_id"] for key in file_keys for rec in data.get(key, [])
+            for a in (rec.get("attachments") or []) if a.get("file_id")]
+    if format == "json":
+        return {"title": title, "subtitle": subtitle, "operator": operator.get("company_name", ""),
+                "authority": authority, "generated": datetime.now(timezone.utc).isoformat(),
+                "has_files": bool(fids), "sections": sections}
+    pdf = await asyncio.to_thread(
+        build_report_pdf, title, subtitle,
+        [("Operator", operator.get("company_name", "")), ("Vehicle", vehicle.get("registration", ""))],
+        sections, await _get_logo_bytes(user.user_id, operator), authority)
+    if include_files:
+        pdf = await asyncio.to_thread(merge_pack, pdf, await _collect_files(user.user_id, fids))
+    fname = f"vehicle-history-{nreg or 'vehicle'}{'-pack' if include_files else ''}-{datetime.now(timezone.utc).date().isoformat()}.pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+_RETENTION_RULES = [
+    ("PMI safety inspections", "pmi_records", ("inspection_date",), 15),
+    ("Daily walkaround checks", "walkaround_checks", ("check_date",), 15),
+    ("Driver defect reports", "defects", ("defect_date", "created_at"), 15),
+    ("Tachograph analyses", "tacho_analyses", ("created_at",), 12),
+]
+
+
+def _keep_until(iso_date, months):
+    import calendar
+    from datetime import date as _date
+    try:
+        d = datetime.fromisoformat(str(iso_date)[:10]).date()
+    except Exception:
+        return None
+    m = d.month - 1 + months
+    y = d.year + m // 12
+    mo = m % 12 + 1
+    day = min(d.day, calendar.monthrange(y, mo)[1])
+    return _date(y, mo, day)
+
+
+@api_router.get("/records-retention")
+async def records_retention(user: User = Depends(get_current_user)):
+    today = datetime.now(timezone.utc).date()
+    categories = []
+    total_eligible = total_approaching = 0
+    for label, coll, fields, months in _RETENTION_RULES:
+        recs = await db[coll].find({"user_id": user.user_id}, {"_id": 0}).to_list(5000)
+        eligible, approaching, items = 0, 0, []
+        for r in recs:
+            raw = next((r.get(f) for f in fields if r.get(f)), None)
+            keep = _keep_until(raw, months) if raw else None
+            if not keep:
+                continue
+            days_left = (keep - today).days
+            if days_left < 0:
+                eligible += 1
+                state = "eligible"
+            elif days_left <= 60:
+                approaching += 1
+                state = "approaching"
+            else:
+                continue
+            items.append({
+                "vehicle_reg": r.get("vehicle_reg") or r.get("driver_name") or "—",
+                "record_date": str(raw)[:10], "keep_until": keep.isoformat(),
+                "days_left": days_left, "state": state,
+            })
+        items.sort(key=lambda x: x["days_left"])
+        total_eligible += eligible
+        total_approaching += approaching
+        categories.append({
+            "label": label, "retention_months": months, "total": len(recs),
+            "eligible": eligible, "approaching": approaching, "items": items[:50],
+        })
+    # Off-road / sold vehicle & trailer records — DVSA guidance: retain 18 months after disposal.
+    RETAIN_MONTHS = 18
+    inactive_total, inactive_eligible, inactive_approaching, inactive_items = 0, 0, 0, []
+    for coll, name_field in (("vehicles", "registration"), ("trailers", "trailer_number")):
+        for r in await db[coll].find({"user_id": user.user_id}, {"_id": 0}).to_list(5000):
+            if not (r.get("sold") or r.get("vor")):
+                continue
+            inactive_total += 1
+            status = "Sold" if r.get("sold") else "VOR"
+            base = r.get("sold_date") or r.get("created_at") if r.get("sold") else (r.get("vor_off_date") or r.get("created_at"))
+            keep = _keep_until(base, RETAIN_MONTHS) if base else None
+            if not keep:
+                continue
+            days_left = (keep - today).days
+            if days_left < 0:
+                inactive_eligible += 1
+                state = "eligible"
+            elif days_left <= 60:
+                inactive_approaching += 1
+                state = "approaching"
+            else:
+                continue
+            inactive_items.append({
+                "vehicle_reg": f"{r.get(name_field)} · {status}", "record_date": str(base)[:10],
+                "keep_until": keep.isoformat(), "days_left": days_left, "state": state,
+            })
+    inactive_items.sort(key=lambda x: x["days_left"])
+    total_eligible += inactive_eligible
+    total_approaching += inactive_approaching
+    categories.append({
+        "label": "Off-road / sold vehicles", "retention_months": RETAIN_MONTHS, "total": inactive_total,
+        "eligible": inactive_eligible, "approaching": inactive_approaching, "items": inactive_items[:50],
+    })
+    return {"total_eligible": total_eligible, "total_approaching": total_approaching, "categories": categories}
 
 
 @api_router.post("/fuel")
@@ -3102,6 +3452,58 @@ async def delete_service(sid: str, user: User = Depends(get_current_user)):
     return {"ok": True}
 
 
+@api_router.get("/repairs")
+async def list_repairs(user: User = Depends(get_current_user)):
+    return await db.repairs.find({"user_id": user.user_id}, {"_id": 0}).sort("repair_date", -1).to_list(1000)
+
+
+@api_router.post("/repairs")
+async def create_repair(data: RepairInput, user: User = Depends(get_current_user)):
+    r = RepairRecord(**data.model_dump(), user_id=user.user_id)
+    await db.repairs.insert_one(r.model_dump())
+    return r.model_dump()
+
+
+@api_router.put("/repairs/{rid}")
+async def update_repair(rid: str, data: RepairInput, user: User = Depends(get_current_user)):
+    res = await db.repairs.update_one({"id": rid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Repair record not found")
+    return {"ok": True}
+
+
+@api_router.delete("/repairs/{rid}")
+async def delete_repair(rid: str, user: User = Depends(get_current_user)):
+    await db.repairs.delete_one({"id": rid, "user_id": user.user_id})
+    return {"ok": True}
+
+
+@api_router.get("/recalls")
+async def list_recalls(user: User = Depends(get_current_user)):
+    return await db.recalls.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+
+@api_router.post("/recalls")
+async def create_recall(data: RecallInput, user: User = Depends(get_current_user)):
+    r = RecallRecord(**data.model_dump(), user_id=user.user_id)
+    await db.recalls.insert_one(r.model_dump())
+    return r.model_dump()
+
+
+@api_router.put("/recalls/{rid}")
+async def update_recall(rid: str, data: RecallInput, user: User = Depends(get_current_user)):
+    res = await db.recalls.update_one({"id": rid, "user_id": user.user_id}, {"$set": data.model_dump()})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Recall not found")
+    return {"ok": True}
+
+
+@api_router.delete("/recalls/{rid}")
+async def delete_recall(rid: str, user: User = Depends(get_current_user)):
+    await db.recalls.delete_one({"id": rid, "user_id": user.user_id})
+    return {"ok": True}
+
+
 # ---------- Daily Walkaround Checks ----------
 @api_router.get("/walkarounds")
 async def list_walkarounds(user: User = Depends(get_current_user)):
@@ -3203,20 +3605,32 @@ async def weekly_walkaround_sheet(wid: str, user: User = Depends(get_current_use
     return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
+async def _get_active_weekly(user_id: str, vehicle_reg: str, driver_name: str = "") -> dict:
+    """The weekly sheet whose 7-day window includes today; else start a new one from today."""
+    today = datetime.now(timezone.utc).date()
+    sheets = await db.weekly_walkarounds.find({"user_id": user_id, "vehicle_reg": vehicle_reg}, {"_id": 0}).to_list(200)
+    for s in sheets:
+        try:
+            st = datetime.fromisoformat(s["week_start"]).date()
+        except Exception:
+            continue
+        if st <= today <= st + timedelta(days=6):
+            return s
+    return await _get_or_create_weekly(user_id, vehicle_reg, today.isoformat(), driver_name)
+
+
 @api_router.get("/driver/weekly-walkaround")
 async def driver_get_weekly(driver: dict = Depends(get_current_driver)):
     reg = driver.get("assigned_vehicle_reg", "")
-    ws = week_start_of(None)
-    return await _get_or_create_weekly(driver["user_id"], reg, ws, driver.get("name", ""))
+    return await _get_active_weekly(driver["user_id"], reg, driver.get("name", ""))
 
 
 @api_router.post("/driver/weekly-walkaround/day")
 async def driver_submit_weekly_day(data: WeeklyDayInput, driver: dict = Depends(get_current_driver)):
     reg = data.vehicle_reg or driver.get("assigned_vehicle_reg", "")
     today = datetime.now(timezone.utc).date()
-    ws = week_start_of(None)
     dk = WEEK_DAYS[today.weekday()]
-    rec = await _get_or_create_weekly(driver["user_id"], reg, ws, driver.get("name", ""))
+    rec = await _get_active_weekly(driver["user_id"], reg, driver.get("name", ""))
     days = rec.get("days") or {}
     failed = [c.get("item") for c in data.checklist if not c.get("ok", True)]
     days[dk] = {
@@ -3466,6 +3880,77 @@ class CalendarEventInput(BaseModel):
     status: str = "valid"
 
 
+class VorInput(BaseModel):
+    reason: str = ""
+    off_date: Optional[str] = None
+    expected_return: Optional[str] = None
+
+
+class SoldInput(BaseModel):
+    sold_date: Optional[str] = None
+    notes: str = ""
+
+
+@api_router.post("/vehicles/{vid}/vor")
+async def set_vehicle_vor(vid: str, data: VorInput, user: User = Depends(get_current_user)):
+    veh = await db.vehicles.find_one({"id": vid, "user_id": user.user_id}, {"_id": 0})
+    if not veh:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    off = data.off_date or datetime.now(timezone.utc).date().isoformat()
+    await db.vehicles.update_one({"id": vid, "user_id": user.user_id}, {"$set": {
+        "vor": True, "vor_reason": data.reason, "vor_off_date": off, "vor_expected_return": data.expected_return}})
+    reg = veh.get("registration", "")
+    await db.calendar_events.delete_many({"user_id": user.user_id, "ref": f"vor:{vid}"})
+    evs = [{"id": f"evt_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "date": off,
+            "title": f"VOR — {reg} off road", "notes": data.reason, "status": "expired",
+            "ref": f"vor:{vid}", "created_at": now_iso()}]
+    if data.expected_return:
+        evs.append({"id": f"evt_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "date": data.expected_return,
+                    "title": f"VOR — {reg} expected back in service", "notes": data.reason, "status": "due_soon",
+                    "ref": f"vor:{vid}", "created_at": now_iso()})
+    await db.calendar_events.insert_many(evs)
+    return {"ok": True}
+
+
+@api_router.post("/vehicles/{vid}/vor/clear")
+async def clear_vehicle_vor(vid: str, user: User = Depends(get_current_user)):
+    await db.vehicles.update_one({"id": vid, "user_id": user.user_id}, {"$set": {
+        "vor": False, "vor_reason": "", "vor_off_date": None, "vor_expected_return": None}})
+    await db.calendar_events.delete_many({"user_id": user.user_id, "ref": f"vor:{vid}"})
+    return {"ok": True}
+
+
+@api_router.post("/vehicles/{vid}/sold")
+async def set_vehicle_sold(vid: str, data: SoldInput, user: User = Depends(get_current_user)):
+    veh = await db.vehicles.find_one({"id": vid, "user_id": user.user_id}, {"_id": 0})
+    if not veh:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    sold_date = data.sold_date or datetime.now(timezone.utc).date().isoformat()
+    await db.vehicles.update_one({"id": vid, "user_id": user.user_id}, {"$set": {
+        "sold": True, "sold_date": sold_date, "sold_notes": data.notes,
+        "vor": False, "vor_reason": "", "vor_off_date": None, "vor_expected_return": None}})
+    reg = veh.get("registration", "")
+    await db.calendar_events.delete_many({"user_id": user.user_id, "ref": {"$in": [f"vor:{vid}", f"sold:{vid}"]}})
+    keep = _keep_until(sold_date, 18)
+    evs = [{"id": f"evt_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "date": sold_date,
+            "title": f"Sold / disposed — {reg}", "notes": data.notes, "status": "valid",
+            "ref": f"sold:{vid}", "created_at": now_iso()}]
+    if keep:
+        evs.append({"id": f"evt_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "date": keep.isoformat(),
+                    "title": f"Records retention ends — {reg}", "notes": "Vehicle records may be archived/disposed after 18 months.",
+                    "status": "due_soon", "ref": f"sold:{vid}", "created_at": now_iso()})
+    await db.calendar_events.insert_many(evs)
+    return {"ok": True, "retain_until": keep.isoformat() if keep else None}
+
+
+@api_router.post("/vehicles/{vid}/sold/clear")
+async def clear_vehicle_sold(vid: str, user: User = Depends(get_current_user)):
+    await db.vehicles.update_one({"id": vid, "user_id": user.user_id}, {"$set": {
+        "sold": False, "sold_date": None, "sold_notes": ""}})
+    await db.calendar_events.delete_many({"user_id": user.user_id, "ref": f"sold:{vid}"})
+    return {"ok": True}
+
+
 @api_router.post("/calendar/events")
 async def create_calendar_event(data: CalendarEventInput, user: User = Depends(get_current_user)):
     ev = {"id": f"evt_{uuid.uuid4().hex[:10]}", "user_id": user.user_id, "date": data.date,
@@ -3507,7 +3992,7 @@ async def gather_stats(user_id: str):
     alerts = []
     expired = due_soon = 0
     for v in vehicles:
-        if v.get("vor"):
+        if v.get("vor") or v.get("sold"):
             continue
         for label, key in [("MOT", "mot_due"), ("Service", "service_due"), ("Tax", "tax_due"), ("Tacho Calibration", "tacho_calibration_due"), ("Speed Limiter", "speed_limiter_due")]:
             d = days_until(v.get(key))
@@ -3541,7 +4026,11 @@ async def gather_stats(user_id: str):
             due_soon += 1
             alerts.append({"type": "document", "name": doc["title"], "item": doc.get("doc_type", "Document"), "status": "due_soon", "days": d})
 
+    vor_regs = {_norm_reg(v.get("registration")) for v in vehicles if v.get("vor") or v.get("sold")}
+    vor_regs |= {_norm_reg(tr.get("trailer_number")) for tr in trailers if tr.get("vor") or tr.get("sold")}
     for p in pmi_schedules:
+        if _norm_reg(p.get("vehicle_reg")) in vor_regs:
+            continue
         d = days_until(p.get("next_due"))
         st = compliance_status(d)
         if st == "expired":
@@ -3552,7 +4041,7 @@ async def gather_stats(user_id: str):
             alerts.append({"type": "pmi", "name": p["vehicle_reg"], "item": "PMI Inspection", "status": "due_soon", "days": d})
 
     for tr in trailers:
-        if tr.get("vor"):
+        if tr.get("vor") or tr.get("sold"):
             continue
         for label, key in [("Annual Test", "mot_due"), ("Service", "service_due")]:
             d = days_until(tr.get(key))
@@ -3605,6 +4094,8 @@ async def gather_stats(user_id: str):
     major_defects = [d for d in open_defects if d.get("severity") in ("major", "safety_critical")]
     wheel = await db.wheel_audits.find({"user_id": user_id}, {"_id": 0}).to_list(1000)
     for w in wheel:
+        if _norm_reg(w.get("vehicle_reg")) in vor_regs:
+            continue
         d = days_until(w.get("next_due"))
         st = compliance_status(d)
         if st == "expired":
@@ -3710,7 +4201,7 @@ async def detect_gaps(user_id: str):
     test_regs = {t.get("vehicle_reg") for t in test_history}
     pmr_with_brake = {r.get("vehicle_reg") for r in pmi_records if r.get("brake_test_type") and r.get("brake_test_type") != "none"}
     for v in vehicles:
-        if v.get("vor"):
+        if v.get("vor") or v.get("sold"):
             continue
         reg = v.get("registration")
         if not v.get("mot_due"):

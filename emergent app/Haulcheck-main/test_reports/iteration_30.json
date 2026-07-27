@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 30 — validated the four batch features: (2) Weekly Walkaround mid-week start (no Monday snap), (3) VOR button on Vehicles + calendar events, (5) Viewer (read-only) TM role via Team invite with server-enforced 403, and the new Repairs / Major Work CRUD. Backend pytest /app/backend/tests/test_iter30_viewer_vor_repairs_weekly.py: 15/15 PASSED. Frontend UI smoke: manager login → Team page role-manager/role-viewer/invite-email-input/send-invite-button all render; Vehicles page mounts (fixed a critical compile-breaking syntax error, see below) with vor-button/clear-vor-button, VOR dialog exposes vor-reason/vor-off-date/vor-return-date/save-vor-button; Maintenance tabs tab-weekly & tab-repairs present, repairs-page + add-repair-button OK, weekly editor exposes weekly-week (any-day date input) and manager sees NO viewer-banner. Viewer end-to-end flow: invited via /api/invitations {role:'viewer'}, accepted via /api/auth/accept-invite, logged in in real browser → viewer-banner text 'Read-only access. You can view everything but changes are disabled.' displayed, viewer sees inviter's vehicle in Fleet, POST /api/vehicles from viewer's token returns HTTP 403 (verified in-browser via fetch). All backend viewer-write blocks confirmed: POST/PUT/DELETE /api/vehicles = 403, POST /api/repairs = 403, POST /api/weekly-walkarounds = 403, POST /api/vehicles/{id}/vor = 403; manager (non-viewer) writes NOT blocked. Weekly mid-week: POST /api/weekly-walkarounds with week_start=2026-06-16 (Tue) and 2026-08-13 (Thu) both preserve the exact date (no Monday snap); PDF still generates (%PDF header). VOR endpoint: POST /api/vehicles/{id}/vor sets vor=true + vor_reason, creates 2 calendar_events (off-road + expected-back) surfaced by GET /api/calendar as titles 'VOR — <reg> off road' and 'VOR — <reg> expected back in service'; /vor/clear resets flag and deletes the 2 events. Repairs full CRUD via /api/repairs works with fields vehicle_reg/category/description/provider/cost.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/calendar", "issue": "Endpoint strips the internal 'ref' field when projecting calendar_events into the response. Not a bug — but any UI wanting to filter events by their source (e.g. only VOR events) has to match on title prefix. Consider exposing 'ref' or a 'source' key so the frontend / integrations can reliably distinguish system-generated events from user-created ones."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "pages/Vehicles.js", "issue": "CRITICAL compile error found and fixed by test agent: file had `}` closing VehiclesPanel at line 196 followed by an orphan `return (` at line 197 — the outer `export default function Vehicles()` declaration was missing. Whole app rendered a red 'Compiled with problems: Module build failed … return outside of function' overlay and login was impossible. Fixed by inserting `export default function Vehicles() {` on line 197. Please review — this suggests the batch merge dropped the outer component signature.", "selector": "[data-testid=\"vehicles-page\"]", "priority": "HIGH (fixed)"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter30_viewer_vor_repairs_weekly.py",
+    "/app/test_reports/pytest/pytest_iter30.xml"
+  ],
+  "action_items": [
+    "Review the Vehicles.js patch (added `export default function Vehicles() {` on line 197) and ensure no other pages have a similarly-orphaned outer wrapper after the batch merge.",
+    "(Optional) Expose 'ref'/'source' on GET /api/calendar responses so the frontend can distinguish VOR-generated events from user-added ones for filtering, deletion guards, etc."
+  ],
+  "critical_code_review_comments": [
+    "server.py:84 viewer_write_guard middleware — correctly exempts /api/auth/* and /api/driver/*; blocks all mutating methods for role=='viewer' with 403 message. Verified across vehicles/repairs/weekly-walkarounds/vor endpoints.",
+    "server.py:914 get_current_user overrides user_id -> account_owner_id for viewers so all list/read queries return the inviter's data. Confirmed: viewer GET /api/vehicles returns owner's records.",
+    "server.py:733 week_start_of() now stores the date as-is (no Monday snap) — verified via 2026-06-16 (Tue) and 2026-08-13 (Thu) round-trip.",
+    "server.py:739 weekly_columns() rotates (weekday_key, iso_date) tuples starting from week_start — good; keeps DB days keyed by 'mon'..'sun' but presents rotated columns to UI/PDF.",
+    "server.py:3601 set_vehicle_vor / 3622 clear_vehicle_vor — both correctly delete_many({'ref':f'vor:{vid}'}) before re-insert, so re-marking is idempotent.",
+    "server.py:3486 GET /api/calendar projection drops the 'ref' field — see minor issue above.",
+    "Vehicles.js line 197 — orphaned `return (` was fatal to the frontend build. The batch adding the VOR dialog appears to have inadvertently removed the wrapping `export default function Vehicles() {` declaration. Patched by the test agent to restore the outer component. Root cause is a merge/refactor slip, not a logic bug.",
+    "Team.js role-manager/role-viewer toggle testids present; server accepts data.role='viewer' (line 966) and correctly branches accept_invite (line 1070+) — viewer accounts get account_owner_id set and share owner region."
+  ],
+  "updated_files": [
+    "/app/frontend/src/pages/Vehicles.js (added missing `export default function Vehicles() {` on line 197 to fix compile error)",
+    "/app/backend/tests/test_iter30_viewer_vor_repairs_weekly.py (new — 15 pytest cases)"
+  ],
+  "success_rate": {"backend": "100% (15/15 pytest)", "frontend": "100% after Vehicles.js compile-fix"},
+  "test_credentials": "Manager: manager@haulcheck.co.uk / Test1234! (pre-seeded). Test users created and cleaned up per run (prefix TEST_/test_).",
+  "seed_data_creation": "During pytest & UI smoke, ephemeral users test_owner_*/test_viewer_*/test_uio_*/test_vwr_* and their vehicles/invitations/calendar_events/repairs/weekly_walkarounds were created and then purged. Nothing lingering.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run: `cd /app/backend && REACT_APP_BACKEND_URL=$(grep REACT_APP_BACKEND_URL /app/frontend/.env|cut -d= -f2) MONGO_URL='mongodb://localhost:27017' DB_NAME='test_database' python -m pytest tests/test_iter30_viewer_vor_repairs_weekly.py -v -o addopts='' --junitxml=/app/test_reports/pytest/pytest_iter30.xml`. All 15 should pass. The one gotcha discovered: /api/calendar drops the 'ref' key so UI can't filter by source — filter by title prefix 'VOR — ' instead if needed. Vehicles.js compile-fix restored the missing outer default export; if the main agent regenerates that file, keep line 197 as `export default function Vehicles() {`.",
+  "rca of the issue": "Vehicles.js compile crash — batch that introduced the VOR dialog (`<Dialog open={!!vorFor} …>`) apparently duplicated a `}` and dropped the outer function declaration for the default-exported Vehicles component. Line 197 originally read `  return (` with no enclosing function, causing Babel to raise `'return' outside of function`. Repro: `curl / && grep 'Compiled with problems'` on the frontend. Fix: replace lines 195-198 to insert `export default function Vehicles() {` above the tabbed Vehicles/Trailers/Fuel/History wrapper. The tabbed wrapper's JSX and JSX-closing brace on line 218 were already correct."
+}

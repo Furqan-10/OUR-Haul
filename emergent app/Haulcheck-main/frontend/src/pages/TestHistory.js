@@ -37,8 +37,22 @@ export function TestHistoryPanel({ embedded = false }) {
   };
   const remove = async (id) => { await api.delete(`/test-history/${id}`); load(); };
 
+  const annual = items.filter((i) => i.event_type === "annual_test");
+  const passes = annual.filter((i) => ["pass", "advisory"].includes(i.result)).length;
+  const passRate = annual.length ? Math.round((passes / annual.length) * 100) : null;
+  const prohibitions = items.filter((i) => i.event_type === "prohibition");
+  const openProhib = prohibitions.filter((i) => ["pg9", "fail"].includes(i.result)).length;
+
   return (
     <div data-testid="test-history-page">
+      {items.length > 0 && (
+        <div data-testid="test-history-summary" className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <Stat label="Annual tests" value={annual.length} />
+          <Stat label="First-time pass rate" value={passRate == null ? "—" : `${passRate}%`} tone={passRate != null && passRate < 100 ? "text-amber-600" : "text-green-700"} />
+          <Stat label="Prohibitions (PG9)" value={prohibitions.length} tone={prohibitions.length ? "text-red-600" : "text-slate-900"} />
+          <Stat label="Outstanding PG9" value={openProhib} tone={openProhib ? "text-red-600" : "text-slate-900"} />
+        </div>
+      )}
       <div className="flex justify-end mb-4">
         <Button data-testid="add-test-history-button" onClick={() => { setForm(empty); setOpen(true); }} className="bg-black hover:bg-slate-800 rounded-md gap-2">Add Test / Prohibition</Button>
       </div>
@@ -103,3 +117,12 @@ export function TestHistoryPanel({ embedded = false }) {
 }
 
 export default function TestHistory() { return <TestHistoryPanel />; }
+
+function Stat({ label, value, tone = "text-slate-900" }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-md p-3">
+      <p className="text-[10px] uppercase tracking-widest text-slate-400 font-semibold">{label}</p>
+      <p className={`font-heading text-2xl font-black mt-1 ${tone}`}>{value}</p>
+    </div>
+  );
+}
