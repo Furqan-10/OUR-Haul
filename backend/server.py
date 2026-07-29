@@ -5060,7 +5060,18 @@ async def ai_risk_insight(user: User = Depends(get_current_user)):
         insight = resp if isinstance(resp, str) else str(resp)
     except Exception as e:
         logging.error(f"AI risk insight failed: {e}")
-        insight = "AI insight unavailable right now. Review the audit checklist below, clear expired items and add any missing mandatory documents/insurance first."
+        # Distinguish "switched off" from "broke". This deployment ships with
+        # AI_PROVIDER=null, so "unavailable right now" would have every user
+        # waiting for a transient fault to clear that never will. The checklist
+        # below is computed without AI and is the substantive part either way.
+        insight = (
+            "AI briefing is not enabled on this account. The audit checklist "
+            "below is still generated -- clear expired items and add any missing "
+            "mandatory documents or insurance first."
+            if not providers_ai.get_provider().available else
+            "AI insight unavailable right now. Review the audit checklist below, "
+            "clear expired items and add any missing mandatory documents/insurance first."
+        )
     return {"score": score, "insight": insight, "checklist": gaps}
 
 
