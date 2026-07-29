@@ -1,0 +1,66 @@
+# Render blueprint.
+#
+# Infrastructure as code, so the deploy is repeatable and every variable is
+# recorded in the repository rather than living only in a dashboard that one
+# person can see.
+#
+# generateValue: Render creates a strong random value on first deploy and keeps
+#   it. Never set these by hand.
+# sync: false: set in the Render UI and never committed. These are the ones you
+#   fill in -- see DEPLOYMENT.md.
+services:
+  - type: web
+    name: haulcheck-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    # The app exposes this already; it reports the database round-trip and which
+    # provider each external service resolved to.
+    healthCheckPath: /api/health
+    envVars:
+      - key: DB_NAME
+        value: haulcheck
+      # Outside development the app refuses to start unless CORS_ORIGINS is an
+      # explicit list, which is deliberate: a permissive fallback in production
+      # would be invisible.
+      - key: ENVIRONMENT
+        value: production
+      # Render terminates TLS at a proxy, so the socket peer is the proxy, not
+      # the client. Without this every request looks like one IP address and the
+      # per-IP limits -- including the driver access-code sweep limit -- share a
+      # single bucket, so one noisy client locks out everyone else.
+      - key: TRUST_PROXY_HEADERS
+        value: "1"
+      - key: STORAGE_PROVIDER
+        value: s3
+      # R2 accepts only "auto".
+      - key: S3_REGION
+        value: auto
+      # AI ships off. Every call site degrades to its existing fallback. To turn
+      # it on: add `anthropic` to requirements.txt, set this to `anthropic`, and
+      # add ANTHROPIC_API_KEY.
+      - key: AI_PROVIDER
+        value: "null"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      # --- Fill these in (Render dashboard -> Environment) ---
+      - key: MONGO_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY
+        sync: false
+      - key: S3_SECRET_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENDER_EMAIL
+        sync: false
