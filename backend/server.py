@@ -46,15 +46,6 @@ JWT_SECRET = os.environ['JWT_SECRET']
 # null provider and the app still starts.
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# The original Google sign-in ran through Emergent's shared demo backend. It is
-# kept working so an existing deployment does not break mid-migration, but it is
-# off by default: a new deployment should not route its users' identities
-# through a third party's demo environment without explicitly choosing to. Set
-# ENABLE_EMERGENT_OAUTH=1 to re-advertise it, or configure GOOGLE_CLIENT_ID /
-# GOOGLE_CLIENT_SECRET to use Google directly (the supported path).
-EMERGENT_OAUTH_FALLBACK = (os.environ.get('ENABLE_EMERGENT_OAUTH', '')
-                           .strip().lower() in ('1', 'true', 'yes'))
-
 # ---------- Object storage ----------
 # Backed by providers/storage.py. These wrappers keep the original names so
 # call sites read the same, but they are now `async` -- the previous versions
@@ -1838,15 +1829,18 @@ async def resend_verification(request: Request, user: User = Depends(get_current
 
 
 # ---------- Google sign-in ----------
-# Two implementations coexist. `/auth/google/*` talks to Google directly using
-# this deployment's own OAuth client and is the supported path. `/auth/session`
-# below is the original Emergent-hosted exchange, kept as a fallback so an
-# existing deployment keeps working until its operator creates a Google client.
+# `/auth/google/*` talks to Google directly using this deployment's own OAuth
+# client. The original Emergent-hosted exchange has been removed: routing users'
+# identities through another party's demo environment is not something this
+# deployment should be able to fall back into by accident.
 @api_router.get("/auth/google/config")
 async def google_config():
-    """Lets the login page decide which button, if any, to show."""
-    return {"enabled": oauth.is_configured() or bool(EMERGENT_OAUTH_FALLBACK),
-            "provider": "google" if oauth.is_configured() else "emergent"}
+    """Lets the login page decide whether to show the button at all.
+
+    Returns disabled when GOOGLE_CLIENT_ID/SECRET are unset, which is the
+    shipped state -- email/password sign-in is unaffected.
+    """
+    return {"enabled": oauth.is_configured(), "provider": "google"}
 
 
 @api_router.post("/auth/google/start")

@@ -14,4 +14,5 @@ Disallow: /tacho
 Disallow: /accept-invite
 Disallow: /api/
 
-Sitemap: https://transport-verify-3.emergent.host/sitemap.xml
+# Uncomment once the production domain is live:
+# Sitemap: https://app.example.com/sitemap.xml

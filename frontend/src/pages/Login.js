@@ -20,11 +20,11 @@ export default function Login() {
   // Which Google sign-in this deployment offers, if any. Asking the server
   // rather than assuming means the button simply does not appear on a
   // deployment that has not configured OAuth, instead of appearing and failing.
-  const [googleAuth, setGoogleAuth] = useState({ enabled: false, provider: null });
+  const [googleAuth, setGoogleAuth] = useState({ enabled: false });
   useEffect(() => {
     api.get("/auth/google/config")
-      .then((res) => setGoogleAuth(res.data))
-      .catch(() => setGoogleAuth({ enabled: false, provider: null }));
+      .then((res) => setGoogleAuth({ enabled: Boolean(res.data?.enabled) }))
+      .catch(() => setGoogleAuth({ enabled: false }));
   }, []);
 
   const submit = async (e) => {
@@ -51,14 +51,8 @@ export default function Login() {
   };
 
   const googleLogin = async () => {
-    if (googleAuth.provider === "emergent") {
-      // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-      const redirectUrl = window.location.origin + "/dashboard";
-      window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-      return;
-    }
-    // Standard OAuth: the server mints the state and builds the URL, so the
-    // CSRF token is never something the browser could choose.
+    // The server mints the state and builds the URL, so the CSRF token is never
+    // something the browser could choose.
     setBusy(true);
     try {
       const redirect_uri = window.location.origin + "/auth/google/callback";
