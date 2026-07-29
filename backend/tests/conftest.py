@@ -51,6 +51,32 @@ def _resolve_base_url() -> str:
 os.environ["REACT_APP_BACKEND_URL"] = _resolve_base_url()
 
 
+# Tests that read source rather than driving the API. They are the build's
+# safety net -- tenancy scoping, vendor coupling, third-party scripts, the
+# dependency manifest -- so they must be runnable in CI and in a container
+# build, where no backend is listening. Gating them on a live API meant the
+# guards could only run on a machine that already had the whole stack up.
+OFFLINE_TEST_MODULES = {
+    "test_tenancy_guard",
+    "test_provider_decoupling",
+    "test_no_third_party_frontend",
+    "test_requirements",
+    "test_sigv4",
+}
+
+
+def _selection_is_offline_only(config) -> bool:
+    """True when every path given on the command line is an offline module."""
+    args = [a for a in config.args if not a.startswith("-")]
+    if not args:
+        return False
+    for arg in args:
+        stem = Path(arg.split("::")[0]).stem
+        if stem not in OFFLINE_TEST_MODULES:
+            return False
+    return True
+
+
 def pytest_configure(config):
     """Refuse to run against anything that is not this backend.
 
@@ -58,10 +84,16 @@ def pytest_configure(config):
     to a naive reachability probe, and the whole suite then fails in confusing
     ways against software that has nothing to do with HaulCheck. Checking for a
     known HaulCheck response turns that into one clear message.
+
+    Skipped when the run selects only source-reading tests, which need no
+    backend at all.
     """
     import json
     import urllib.error
     import urllib.request
+
+    if _selection_is_offline_only(config):
+        return
 
     base = os.environ["REACT_APP_BACKEND_URL"]
     url = f"{base}/api/auth/me"
