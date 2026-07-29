@@ -5252,32 +5252,92 @@ async def _process_weekly_user(org_id: str, recipients: list) -> int:
 
 @scheduling.run_once(lambda: db, "daily_reminders")
 async def run_daily_reminders():
+    """Returns a summary, or None when another instance held the lock."""
     logger.info("Running daily reminder job")
+    summary = {"orgs": 0, "sent": 0, "failed": 0}
     settings_list = await db.reminder_settings.find({"recipients": {"$exists": True, "$ne": []}}, {"_id": 0}).to_list(10000)
     for s in settings_list:
         if not s.get("recipients"):
             continue
+        summary["orgs"] += 1
         try:
             res = await _process_daily_user(s["org_id"], s["recipients"])
             if res["new_item_count"]:
+                summary["sent"] += 1
                 logger.info(f"Daily reminder sent to {s['user_id']} ({res['new_item_count']} new items)")
         except Exception as e:
+            summary["failed"] += 1
             logger.error(f"Daily reminder failed for {s.get('user_id')}: {e}")
+    return summary
 
 
 @scheduling.run_once(lambda: db, "weekly_reminders")
 async def run_weekly_reminders():
+    """Returns a summary, or None when another instance held the lock."""
     logger.info("Running weekly reminder job")
+    summary = {"orgs": 0, "sent": 0, "failed": 0}
     settings_list = await db.reminder_settings.find({"recipients": {"$exists": True, "$ne": []}}, {"_id": 0}).to_list(10000)
     for s in settings_list:
         if not s.get("recipients"):
             continue
+        summary["orgs"] += 1
         try:
             sent = await _process_weekly_user(s["org_id"], s["recipients"])
             if sent:
+                summary["sent"] += 1
                 logger.info(f"Weekly summary sent to {s['user_id']} ({sent} recipients)")
         except Exception as e:
+            summary["failed"] += 1
             logger.error(f"Weekly reminder failed for {s.get('user_id')}: {e}")
+    return summary
+
+
+@api_router.post("/tasks/run-reminders")
+async def trigger_reminder_jobs(request: Request, job: str = Query("")):
+    """Run the reminder jobs on demand, for an external scheduler.
+
+    APScheduler runs these in-process at 07:00 UTC, which works only while the
+    process is running. On a host that stops an idle instance -- Render's free
+    tier stops after 15 minutes -- 07:00 arrives with nothing listening and the
+    compliance reminders are simply never sent. Silently, because nothing is
+    awake to log it.
+
+    Both jobs carry `scheduling.run_once`, so triggering one that is already
+    running is a no-op rather than a second copy of every customer's email.
+    That is what makes this endpoint safe to retry, and safe to leave enabled
+    alongside APScheduler on a paid tier.
+    """
+    secret = (os.environ.get("CRON_SECRET") or "").strip()
+    if not secret:
+        # 503, not 401: the caller's credentials are not what is wrong.
+        raise HTTPException(
+            status_code=503,
+            detail="CRON_SECRET is not configured, so scheduled jobs cannot be triggered.")
+
+    header = request.headers.get("Authorization", "")
+    presented = header[7:].strip() if header[:7].lower() == "bearer " else ""
+    # compare_digest, not ==, so a wrong secret cannot be recovered by timing
+    # the response across many attempts.
+    if not secrets.compare_digest(presented, secret):
+        await security.record_failure(db, "login_ip", security.client_ip(request))
+        raise HTTPException(status_code=401, detail="Invalid or missing cron secret.")
+
+    requested = (job or "").strip().lower()
+    if requested and requested not in ("daily", "weekly"):
+        raise HTTPException(status_code=400, detail="job must be 'daily' or 'weekly'.")
+
+    # With no `job`, do what the in-process schedule would have done today:
+    # daily every day, weekly as well on Mondays. One cron entry to configure,
+    # not two.
+    is_monday = datetime.now(timezone.utc).weekday() == 0
+    ran = {}
+    if requested in ("", "daily"):
+        ran["daily"] = await run_daily_reminders()
+    if requested == "weekly" or (requested == "" and is_monday):
+        ran["weekly"] = await run_weekly_reminders()
+
+    logger.info(f"Reminder jobs triggered externally: {ran}")
+    return {"ran": ran}
 
 
 @api_router.post("/reminders/send")
