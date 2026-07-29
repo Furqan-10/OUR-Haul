@@ -19,6 +19,8 @@ from typing import Optional, Tuple
 
 import httpx
 
+from . import _sigv4
+
 MIME_TYPES = {
     "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif",
     "webp": "image/webp", "pdf": "application/pdf", "heic": "image/heic",
@@ -94,40 +96,89 @@ class EmergentStorage(StorageProvider):
 
 
 class S3Storage(StorageProvider):
-    """S3-compatible storage (AWS, Cloudflare R2, MinIO, Backblaze B2).
+    """S3-compatible storage: Cloudflare R2, AWS S3, MinIO, Backblaze B2.
 
-    The migration target. Implemented against the S3 REST API through httpx
-    rather than boto3, which is synchronous and would reintroduce the blocking
-    problem this module exists to fix.
+    Implemented against the S3 REST API through httpx rather than boto3, which
+    is synchronous and would reintroduce the blocking this module exists to fix.
+    Requests are signed by `_sigv4`, verified against botocore in
+    `tests/test_sigv4.py`.
 
-    Not yet wired to a live bucket -- set STORAGE_PROVIDER=s3 plus the S3_*
-    variables to use it, and verify against a scratch bucket before moving
-    real evidence.
+    Addressing is path-style (`<endpoint>/<bucket>/<key>`) because R2 does not
+    serve virtual-host style on the default endpoint.
     """
 
     name = "s3"
 
     def __init__(self, bucket: str, endpoint: str, access_key: str, secret_key: str,
                  region: str = "auto"):
-        self.bucket, self.endpoint = bucket, endpoint.rstrip("/")
-        self.access_key, self.secret_key, self.region = access_key, secret_key, region
+        self.bucket = bucket
+        self.endpoint = endpoint.rstrip("/")
+        self.access_key = access_key
+        self.secret_key = secret_key
+        # R2 accepts only "auto". An empty value signs a scope the server
+        # rejects, with an error that does not mention the region.
+        self.region = region or "auto"
 
-    def _sign(self, *args, **kwargs):  # pragma: no cover - not yet exercised
-        raise NotImplementedError(
-            "S3 request signing is not implemented yet. Provide credentials and "
-            "complete this method before switching STORAGE_PROVIDER to s3."
-        )
+    def _url(self, path: str) -> str:
+        return f"{self.endpoint}/{self.bucket}/{path.lstrip('/')}"
 
-    async def put(self, path: str, data: bytes, content_type: str) -> dict:
-        raise NotImplementedError(self._unimplemented())
-
-    async def get(self, path: str) -> Tuple[bytes, str]:
-        raise NotImplementedError(self._unimplemented())
+    async def _send(self, method: str, path: str, *, data: bytes = b"",
+                    content_type: str = "", timeout: int = 120):
+        url = self._url(path)
+        headers = {"Content-Type": content_type} if content_type else {}
+        headers = _sigv4.sign(
+            method=method, url=url, headers=headers, payload=data,
+            access_key=self.access_key, secret_key=self.secret_key,
+            region=self.region, service="s3")
+        async with httpx.AsyncClient(timeout=timeout) as http:
+            return await http.request(method, url, headers=headers,
+                                      content=data or None)
 
     @staticmethod
-    def _unimplemented() -> str:
-        return ("S3Storage is a migration stub. Implement request signing, or keep "
-                "STORAGE_PROVIDER=emergent.")
+    def _fail(action: str, path: str, response) -> StorageUnavailable:
+        # S3 returns the reason in an XML body. Including a slice of it turns
+        # "upload failed" into something diagnosable: SignatureDoesNotMatch,
+        # NoSuchBucket and AccessDenied need three different fixes, and the
+        # status code alone distinguishes none of them.
+        return StorageUnavailable(
+            f"Storage {action} failed for '{path}': HTTP {response.status_code}. "
+            f"{response.text[:300]}")
+
+    async def put(self, path: str, data: bytes, content_type: str) -> dict:
+        response = await self._send("PUT", path, data=data, content_type=content_type)
+        if response.status_code >= 400:
+            raise self._fail("upload", path, response)
+        return {
+            "path": path,
+            "size": len(data),
+            "content_type": content_type,
+            "etag": response.headers.get("ETag", "").strip('"'),
+        }
+
+    async def get(self, path: str) -> Tuple[bytes, str]:
+        response = await self._send("GET", path, timeout=60)
+        if response.status_code == 404:
+            raise StorageUnavailable(f"No stored object at '{path}'.")
+        if response.status_code >= 400:
+            raise self._fail("download", path, response)
+        return response.content, response.headers.get(
+            "Content-Type", "application/octet-stream")
+
+    async def delete(self, path: str) -> None:
+        response = await self._send("DELETE", path, timeout=60)
+        # 404 counts as success: the object is not there, which is the state
+        # the caller asked for.
+        if response.status_code not in (200, 202, 204, 404):
+            raise self._fail("delete", path, response)
+
+    async def healthy(self) -> bool:
+        """True when the bucket exists and these credentials can reach it."""
+        try:
+            response = await self._send("HEAD", "", timeout=15)
+            return response.status_code < 400
+        except Exception as e:
+            logging.error(f"S3 storage health check failed: {e}")
+            return False
 
 
 class NullStorage(StorageProvider):
